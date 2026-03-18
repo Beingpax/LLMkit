@@ -16,6 +16,7 @@ public struct OpenAILLMClient: Sendable {
     ///   - systemPrompt: Optional system prompt. If provided, prepended as a system message.
     ///   - temperature: Sampling temperature (default 0.3).
     ///   - reasoningEffort: Optional reasoning effort parameter for supported models.
+    ///   - extraBody: Optional dictionary of additional parameters to include in the request body (e.g. `["disable_reasoning": true]`).
     ///   - timeout: Request timeout in seconds (default 30).
     /// - Returns: The assistant's response text.
     public static func chatCompletion(
@@ -26,6 +27,7 @@ public struct OpenAILLMClient: Sendable {
         systemPrompt: String? = nil,
         temperature: Double = 0.3,
         reasoningEffort: String? = nil,
+        extraBody: [String: Any]? = nil,
         timeout: TimeInterval = 30
     ) async throws -> String {
         try validateAPIKey(apiKey)
@@ -50,6 +52,12 @@ public struct OpenAILLMClient: Sendable {
 
         if let reasoningEffort {
             bodyDict["reasoning_effort"] = reasoningEffort
+        }
+
+        if let extraBody {
+            for (key, value) in extraBody {
+                bodyDict[key] = value
+            }
         }
 
         guard let body = try? JSONSerialization.data(withJSONObject: bodyDict) else {
