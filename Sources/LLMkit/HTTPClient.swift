@@ -42,6 +42,8 @@ func performRequest(
             return (data, response)
         } catch let error as LLMKitError {
             throw error
+        } catch let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorTimedOut {
+            throw LLMKitError.timeout
         } catch {
             lastError = error
             if attempt < maxRetries { continue }
@@ -84,6 +86,8 @@ func performUpload(
             return (data, response)
         } catch let error as LLMKitError {
             throw error
+        } catch let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorTimedOut {
+            throw LLMKitError.timeout
         } catch {
             lastError = error
             if attempt < maxRetries { continue }
