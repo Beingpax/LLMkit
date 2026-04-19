@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 /// Speechmatics real-time streaming transcription client.
 ///
@@ -7,8 +6,6 @@ import os
 /// Sends raw binary PCM audio (NOT base64). Uses `StartRecognition` / `EndOfStream` protocol.
 /// API docs: https://docs.speechmatics.com/api-ref/realtime-transcription-websocket
 public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, @unchecked Sendable {
-
-    private let logger = Logger(subsystem: "com.llmkit", category: "SpeechmaticsStreaming")
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -40,9 +37,6 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
             throw LLMKitError.invalidURL(urlString)
         }
 
-        logger.notice("[SM] Connecting to \(urlString, privacy: .public)")
-        logger.notice("[SM] API key length: \(apiKey.count), model/operatingPoint: \(model, privacy: .public), language: \(language ?? "nil", privacy: .public)")
-
         var request = URLRequest(url: url)
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
@@ -55,14 +49,9 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
         self.accumulatedFinalText = ""
         task.resume()
 
-        logger.notice("[SM] WebSocket task resumed, sending StartRecognition...")
-
         // Send StartRecognition and wait for RecognitionStarted BEFORE starting the receive loop.
         try await sendStartRecognition(language: language, operatingPoint: model, customVocabulary: customVocabulary)
-        logger.notice("[SM] StartRecognition sent, waiting for RecognitionStarted...")
-
         try await waitForRecognitionStarted()
-        logger.notice("[SM] RecognitionStarted received, connection established")
 
         // Now start the background receive loop for transcription events
         receiveTask = Task { [weak self] in
@@ -77,9 +66,6 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
             throw LLMKitError.networkError("Not connected to Speechmatics streaming.")
         }
         seqNo += 1
-        if seqNo == 1 || seqNo % 50 == 0 {
-            logger.notice("[SM] Sending audio chunk #\(self.seqNo), size: \(data.count) bytes")
-        }
         try await task.send(.data(data))
     }
 
@@ -88,8 +74,6 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
             throw LLMKitError.networkError("Not connected to Speechmatics streaming.")
         }
 
-        logger.notice("[SM] Committing: sending EndOfStream with last_seq_no=\(self.seqNo)")
-
         let endMessage: [String: Any] = [
             "message": "EndOfStream",
             "last_seq_no": seqNo
@@ -97,11 +81,9 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
         let jsonData = try JSONSerialization.data(withJSONObject: endMessage)
         let jsonString = String(data: jsonData, encoding: .utf8)!
         try await task.send(.string(jsonString))
-        logger.notice("[SM] EndOfStream sent successfully")
     }
 
     public func disconnect() async {
-        logger.notice("[SM] Disconnecting. seqNo=\(self.seqNo), accumulatedText length=\(self.accumulatedFinalText.count)")
         receiveTask?.cancel()
         receiveTask = nil
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -146,7 +128,6 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
 
         let jsonData = try JSONSerialization.data(withJSONObject: startMessage)
         let jsonString = String(data: jsonData, encoding: .utf8)!
-        logger.notice("[SM] StartRecognition JSON: \(jsonString, privacy: .public)")
         try await task.send(.string(jsonString))
     }
 
@@ -163,7 +144,6 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
                 let message = try await task.receive()
                 switch message {
                 case .string(let text):
-                    logger.notice("[SM] Handshake received: \(text, privacy: .public)")
                     guard let data = text.data(using: .utf8),
                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                           let messageType = json["message"] as? String else { continue }
@@ -172,11 +152,9 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
                         return
                     } else if messageType == "Error" {
                         let reason = json["reason"] as? String ?? "Unknown error"
-                        logger.error("[SM] Error during handshake: \(reason, privacy: .public)")
                         throw LLMKitError.httpError(statusCode: 400, message: "Speechmatics: \(reason)")
                     }
-                case .data(let data):
-                    logger.notice("[SM] Handshake received binary data (\(data.count) bytes) — unexpected")
+                case .data:
                     continue
                 @unknown default:
                     continue
@@ -184,21 +162,14 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
             } catch let error as LLMKitError {
                 throw error
             } catch {
-                logger.error("[SM] Handshake receive error: \(error.localizedDescription, privacy: .public)")
                 throw LLMKitError.networkError("Failed to receive RecognitionStarted: \(error.localizedDescription)")
             }
         }
-        logger.error("[SM] Timed out waiting for RecognitionStarted")
         throw LLMKitError.timeout
     }
 
     private func receiveLoop() async {
-        guard let task = webSocketTask else {
-            logger.error("[SM] receiveLoop: no webSocketTask")
-            return
-        }
-
-        logger.notice("[SM] receiveLoop started")
+        guard let task = webSocketTask else { return }
 
         while !Task.isCancelled {
             do {
@@ -209,77 +180,50 @@ public final class SpeechmaticsStreamingClient: StreamingTranscriptionProvider, 
                 case .data(let data):
                     if let text = String(data: data, encoding: .utf8) {
                         handleMessage(text)
-                    } else {
-                        logger.notice("[SM] Received non-UTF8 binary data (\(data.count) bytes)")
                     }
                 @unknown default:
                     break
                 }
             } catch {
                 if !Task.isCancelled {
-                    logger.error("[SM] receiveLoop error: \(error.localizedDescription, privacy: .public)")
                     eventsContinuation?.yield(.error(error.localizedDescription))
                 }
                 break
             }
         }
-        logger.notice("[SM] receiveLoop ended")
     }
 
     private func handleMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let messageType = json["message"] as? String else {
-            logger.warning("[SM] Could not parse message: \(text.prefix(200), privacy: .public)")
             return
         }
 
         switch messageType {
-        case "AudioAdded":
-            if let seq = json["seq_no"] as? Int, seq == 1 || seq % 50 == 0 {
-                logger.notice("[SM] AudioAdded seq_no=\(seq)")
-            }
-
         case "AddPartialTranscript":
             guard let metadata = json["metadata"] as? [String: Any],
                   let transcript = metadata["transcript"] as? String,
                   !transcript.trimmingCharacters(in: .whitespaces).isEmpty else { return }
             let fullPartial = accumulatedFinalText + transcript
-            logger.notice("[SM] Partial: \"\(fullPartial.trimmingCharacters(in: .whitespaces).prefix(100), privacy: .public)\"")
             eventsContinuation?.yield(.partial(text: cleanPunctuation(fullPartial.trimmingCharacters(in: .whitespaces))))
 
         case "AddTranscript":
             guard let metadata = json["metadata"] as? [String: Any],
                   let transcript = metadata["transcript"] as? String else { return }
             accumulatedFinalText += transcript
-            logger.notice("[SM] Final: accumulated=\"\(self.accumulatedFinalText.trimmingCharacters(in: .whitespaces).prefix(100), privacy: .public)\"")
 
         case "EndOfTranscript":
             let finalText = cleanPunctuation(accumulatedFinalText.trimmingCharacters(in: .whitespaces))
-            logger.notice("[SM] EndOfTranscript. Final text (\(finalText.count) chars): \"\(finalText.prefix(100), privacy: .public)\"")
             eventsContinuation?.yield(.committed(text: finalText))
             accumulatedFinalText = ""
 
         case "Error":
             let reason = json["reason"] as? String ?? "Unknown error"
-            let errorType = json["type"] as? String ?? "unknown"
-            logger.error("[SM] Server error: type=\(errorType, privacy: .public), reason=\(reason, privacy: .public)")
             eventsContinuation?.yield(.error(reason))
 
-        case "Warning":
-            let reason = json["reason"] as? String ?? ""
-            let warnType = json["type"] as? String ?? ""
-            logger.warning("[SM] Server warning: type=\(warnType, privacy: .public), reason=\(reason, privacy: .public)")
-
-        case "Info":
-            let reason = json["reason"] as? String ?? ""
-            logger.notice("[SM] Info: \(reason, privacy: .public)")
-
-        case "EndOfUtterance":
-            logger.notice("[SM] EndOfUtterance")
-
         default:
-            logger.notice("[SM] Unhandled message type: \(messageType, privacy: .public)")
+            break
         }
     }
 
