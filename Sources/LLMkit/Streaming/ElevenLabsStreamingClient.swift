@@ -31,7 +31,7 @@ public final class ElevenLabsStreamingClient: StreamingTranscriptionProvider, @u
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "model_id", value: model),
             URLQueryItem(name: "audio_format", value: "pcm_16000"),
-            URLQueryItem(name: "commit_strategy", value: "vad"),
+            URLQueryItem(name: "commit_strategy", value: "manual"),
         ]
 
         if let language, language != "auto", !language.isEmpty {
