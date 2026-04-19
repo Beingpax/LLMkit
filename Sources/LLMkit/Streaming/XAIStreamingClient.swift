@@ -11,6 +11,9 @@ public final class XAIStreamingClient: StreamingTranscriptionProvider, @unchecke
     private var urlSession: URLSession?
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private var receiveTask: Task<Void, Never>?
+    /// Chunk-final text accumulated for the current in-progress utterance.
+    /// Cleared when `speech_final=true` or `transcript.done` fires.
+    private var lockedUtteranceBuffer = ""
 
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
@@ -37,6 +40,8 @@ public final class XAIStreamingClient: StreamingTranscriptionProvider, @unchecke
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm"),
             URLQueryItem(name: "interim_results", value: "true"),
+            // Default is 10ms which chops sentences at micro-pauses. 800ms feels natural for dictation.
+            URLQueryItem(name: "endpointing", value: "800"),
         ]
 
         if let language, language != "auto", !language.isEmpty {
@@ -110,6 +115,7 @@ public final class XAIStreamingClient: StreamingTranscriptionProvider, @unchecke
         urlSession?.invalidateAndCancel()
         urlSession = nil
         eventsContinuation?.finish()
+        lockedUtteranceBuffer = ""
     }
 
     // MARK: - Private
@@ -146,13 +152,30 @@ public final class XAIStreamingClient: StreamingTranscriptionProvider, @unchecke
 
         switch type {
         case "transcript.partial":
-            guard let transcript = json["text"] as? String,
-                  !transcript.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-            eventsContinuation?.yield(.partial(text: transcript))
+            guard let text = json["text"] as? String,
+                  !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+            let isFinal = (json["is_final"] as? Bool) ?? false
+            let speechFinal = (json["speech_final"] as? Bool) ?? false
+
+            if speechFinal {
+                eventsContinuation?.yield(.committed(text: text))
+                lockedUtteranceBuffer = ""
+            } else if isFinal {
+                lockedUtteranceBuffer = lockedUtteranceBuffer.isEmpty
+                    ? text
+                    : lockedUtteranceBuffer + " " + text
+                eventsContinuation?.yield(.partial(text: lockedUtteranceBuffer))
+            } else {
+                let display = lockedUtteranceBuffer.isEmpty
+                    ? text
+                    : lockedUtteranceBuffer + " " + text
+                eventsContinuation?.yield(.partial(text: display))
+            }
 
         case "transcript.done":
-            guard let transcript = json["text"] as? String else { return }
-            eventsContinuation?.yield(.committed(text: transcript))
+            let text = (json["text"] as? String) ?? ""
+            eventsContinuation?.yield(.committed(text: text))
+            lockedUtteranceBuffer = ""
 
         case "error":
             let message = json["message"] as? String ?? "xAI streaming error"
