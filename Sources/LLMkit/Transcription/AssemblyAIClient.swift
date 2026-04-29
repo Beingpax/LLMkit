@@ -204,7 +204,8 @@ public struct AssemblyAIClient: Sendable {
         let limit = model == "universal-2" ? 200 : 1_000
         for term in terms {
             let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed.count <= 50 else { continue }
+            let wordCount = trimmed.split(separator: " ").count
+            guard !trimmed.isEmpty, trimmed.count <= 50, wordCount <= 6 else { continue }
             let key = trimmed.lowercased()
             guard !seen.contains(key) else { continue }
             seen.insert(key)
