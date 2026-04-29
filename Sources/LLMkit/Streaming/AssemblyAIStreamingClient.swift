@@ -202,7 +202,8 @@ public final class AssemblyAIStreamingClient: StreamingTranscriptionProvider, @u
         var result: [String] = []
         for term in customVocabulary {
             let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, trimmed.count <= 50 else { continue }
+            let wordCount = trimmed.split(separator: " ").count
+            guard !trimmed.isEmpty, trimmed.count <= 50, wordCount <= 6 else { continue }
             let key = trimmed.lowercased()
             guard !seen.contains(key) else { continue }
             seen.insert(key)
