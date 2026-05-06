@@ -56,6 +56,8 @@ public struct OllamaClient: Sendable {
     ///   - prompt: The user prompt.
     ///   - systemPrompt: The system prompt.
     ///   - temperature: Sampling temperature (default 0.3).
+    ///   - think: Whether thinking models should reason before responding (default `false`).
+    ///            When `false`, models like Qwen 3 will skip their internal reasoning step.
     ///   - timeout: Request timeout in seconds (default 30).
     /// - Returns: The generated response text.
     public static func generate(
@@ -64,6 +66,7 @@ public struct OllamaClient: Sendable {
         prompt: String,
         systemPrompt: String,
         temperature: Double = 0.3,
+        think: Bool = false,
         timeout: TimeInterval = 30
     ) async throws -> String {
         let url = baseURL.appendingPathComponent("api/generate")
@@ -77,6 +80,7 @@ public struct OllamaClient: Sendable {
             "prompt": prompt,
             "system": systemPrompt,
             "temperature": temperature,
+            "think": think,
             "stream": false
         ]
 
