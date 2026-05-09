@@ -6,6 +6,7 @@ import Foundation
 /// Sends raw binary PCM audio. API key is sent in the initial config JSON (not HTTP header).
 /// Parses token-based responses with `is_final` flags and `<fin>` markers.
 public final class SonioxStreamingClient: StreamingTranscriptionProvider, @unchecked Sendable {
+    public static let defaultWebSocketURL = URL(string: "wss://stt-rt.soniox.com/transcribe-websocket")!
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -29,13 +30,24 @@ public final class SonioxStreamingClient: StreamingTranscriptionProvider, @unche
     }
 
     public func connect(apiKey: String, model: String, language: String?, customVocabulary: [String] = []) async throws {
-        let urlString = "wss://stt-rt.soniox.com/transcribe-websocket"
-        guard let url = URL(string: urlString) else {
-            throw LLMKitError.invalidURL(urlString)
-        }
+        try await connect(
+            apiKey: apiKey,
+            model: model,
+            language: language,
+            customVocabulary: customVocabulary,
+            webSocketURL: SonioxStreamingClient.defaultWebSocketURL
+        )
+    }
 
+    public func connect(
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String] = [],
+        webSocketURL: URL
+    ) async throws {
         let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
+        let task = session.webSocketTask(with: webSocketURL)
 
         self.urlSession = session
         self.webSocketTask = task

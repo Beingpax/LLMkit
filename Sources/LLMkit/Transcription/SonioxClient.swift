@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Uses a multi-step flow: upload file → create transcription job → poll status → fetch transcript.
 public struct SonioxClient: Sendable {
-    private static let apiBase = "https://api.soniox.com/v1"
+    public static let defaultBaseURL = URL(string: "https://api.soniox.com/v1")!
 
     /// Transcribes audio data using the Soniox API.
     ///
@@ -18,6 +18,7 @@ public struct SonioxClient: Sendable {
     ///   - model: Model name (e.g. `"stt-async-v4"`).
     ///   - language: Optional language hint. Pass `nil` for auto-detect.
     ///   - customVocabulary: Optional list of custom terms to boost recognition.
+    ///   - baseURL: Soniox API base URL.
     ///   - maxWaitSeconds: Maximum seconds to wait for transcription completion (default 300).
     ///   - timeout: Per-request timeout in seconds (default 30).
     /// - Returns: The transcribed text.
@@ -28,22 +29,24 @@ public struct SonioxClient: Sendable {
         model: String,
         language: String? = nil,
         customVocabulary: [String] = [],
+        baseURL: URL = SonioxClient.defaultBaseURL,
         maxWaitSeconds: TimeInterval = 300,
         timeout: TimeInterval = 30
     ) async throws -> String {
         try validateAPIKey(apiKey)
 
-        let fileId = try await uploadFile(audioData: audioData, fileName: fileName, apiKey: apiKey, timeout: timeout)
+        let fileId = try await uploadFile(audioData: audioData, fileName: fileName, apiKey: apiKey, baseURL: baseURL, timeout: timeout)
         let transcriptionId = try await createTranscription(
             fileId: fileId,
             apiKey: apiKey,
             model: model,
             language: language,
             customVocabulary: customVocabulary,
+            baseURL: baseURL,
             timeout: timeout
         )
-        try await pollTranscriptionStatus(id: transcriptionId, apiKey: apiKey, maxWaitSeconds: maxWaitSeconds, timeout: timeout)
-        let transcript = try await fetchTranscript(id: transcriptionId, apiKey: apiKey, timeout: timeout)
+        try await pollTranscriptionStatus(id: transcriptionId, apiKey: apiKey, baseURL: baseURL, maxWaitSeconds: maxWaitSeconds, timeout: timeout)
+        let transcript = try await fetchTranscript(id: transcriptionId, apiKey: apiKey, baseURL: baseURL, timeout: timeout)
 
         guard !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LLMKitError.noResultReturned
@@ -55,14 +58,19 @@ public struct SonioxClient: Sendable {
     ///
     /// - Parameters:
     ///   - apiKey: Soniox API key.
+    ///   - baseURL: Soniox API base URL.
     ///   - timeout: Request timeout in seconds (default 10).
     /// - Returns: A tuple of (isValid, errorMessage). `errorMessage` is `nil` on success.
-    public static func verifyAPIKey(_ apiKey: String, timeout: TimeInterval = 10) async -> (isValid: Bool, errorMessage: String?) {
+    public static func verifyAPIKey(
+        _ apiKey: String,
+        baseURL: URL = SonioxClient.defaultBaseURL,
+        timeout: TimeInterval = 10
+    ) async -> (isValid: Bool, errorMessage: String?) {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (false, "API key is missing or empty.")
         }
 
-        guard let url = URL(string: "\(apiBase)/files") else { return (false, "Invalid URL.") }
+        let url = baseURL.appendingPathComponent("files")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = timeout
@@ -86,15 +94,11 @@ public struct SonioxClient: Sendable {
 
     // MARK: - Private Steps
 
-    private static func uploadFile(audioData: Data, fileName: String, apiKey: String, timeout: TimeInterval) async throws -> String {
-        guard let url = URL(string: "\(apiBase)/files") else {
-            throw LLMKitError.invalidURL("\(apiBase)/files")
-        }
-
+    private static func uploadFile(audioData: Data, fileName: String, apiKey: String, baseURL: URL, timeout: TimeInterval) async throws -> String {
         var form = MultipartFormData()
         form.addFile(name: "file", fileName: fileName, mimeType: "audio/wav", fileData: audioData)
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: baseURL.appendingPathComponent("files"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
@@ -112,12 +116,9 @@ public struct SonioxClient: Sendable {
         model: String,
         language: String?,
         customVocabulary: [String],
+        baseURL: URL,
         timeout: TimeInterval
     ) async throws -> String {
-        guard let url = URL(string: "\(apiBase)/transcriptions") else {
-            throw LLMKitError.invalidURL("\(apiBase)/transcriptions")
-        }
-
         var payload: [String: Any] = [
             "file_id": fileId,
             "model": model,
@@ -136,7 +137,7 @@ public struct SonioxClient: Sendable {
             payload["enable_language_identification"] = true
         }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: baseURL.appendingPathComponent("transcriptions"))
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -153,10 +154,8 @@ public struct SonioxClient: Sendable {
         return decoded.id
     }
 
-    private static func pollTranscriptionStatus(id: String, apiKey: String, maxWaitSeconds: TimeInterval, timeout: TimeInterval) async throws {
-        guard let url = URL(string: "\(apiBase)/transcriptions/\(id)") else {
-            throw LLMKitError.invalidURL("\(apiBase)/transcriptions/\(id)")
-        }
+    private static func pollTranscriptionStatus(id: String, apiKey: String, baseURL: URL, maxWaitSeconds: TimeInterval, timeout: TimeInterval) async throws {
+        let url = transcriptionURL(baseURL: baseURL, id: id)
 
         let start = Date()
         while true {
@@ -186,11 +185,9 @@ public struct SonioxClient: Sendable {
         }
     }
 
-    private static func fetchTranscript(id: String, apiKey: String, timeout: TimeInterval) async throws -> String {
-        guard let url = URL(string: "\(apiBase)/transcriptions/\(id)/transcript") else {
-            throw LLMKitError.invalidURL("\(apiBase)/transcriptions/\(id)/transcript")
-        }
-
+    private static func fetchTranscript(id: String, apiKey: String, baseURL: URL, timeout: TimeInterval) async throws -> String {
+        let url = transcriptionURL(baseURL: baseURL, id: id)
+            .appendingPathComponent("transcript")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -205,6 +202,12 @@ public struct SonioxClient: Sendable {
             return text
         }
         throw LLMKitError.noResultReturned
+    }
+
+    private static func transcriptionURL(baseURL: URL, id: String) -> URL {
+        baseURL
+            .appendingPathComponent("transcriptions")
+            .appendingPathComponent(id)
     }
 }
 
