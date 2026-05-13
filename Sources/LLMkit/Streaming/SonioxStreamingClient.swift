@@ -194,7 +194,13 @@ public final class SonioxStreamingClient: StreamingTranscriptionProvider, @unche
         if sawFinMarker {
             eventsContinuation?.yield(.committed(text: finalText))
             finalText = ""
-        } else if !newPartialText.isEmpty {
+        } else if !newPartialText.isEmpty || !newFinalText.isEmpty {
+            // Emit a partial whenever the running transcript changed, even if only
+            // `is_final=true` tokens arrived in this batch and no `<fin>` marker.
+            // Without this, batches of pure-final tokens silently accumulate in
+            // `finalText` and the UI's live preview stays empty until the next
+            // partial token or segment boundary — which the user perceives as
+            // "live transcription doesn't work with Soniox Real-Time".
             let currentPartial = finalText + newPartialText
             eventsContinuation?.yield(.partial(text: currentPartial))
         }
