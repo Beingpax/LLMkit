@@ -5,8 +5,17 @@ public enum StreamingTranscriptionEvent: Sendable {
     /// The streaming session has been established.
     case sessionStarted
     /// A partial (non-final) transcript update.
+    ///
+    /// Consumers should treat each `.partial` as a *replacement* of the current
+    /// in-progress segment, not as something to append. The same content may
+    /// be re-emitted as `.committed` once the segment finalizes — in that case
+    /// the `.committed` supersedes the preceding `.partial` for that segment.
     case partial(text: String)
     /// A finalized transcript segment.
+    ///
+    /// `.committed` supersedes any preceding `.partial(text:)` for the same
+    /// segment. Consumers that maintain a "live preview" buffer should clear
+    /// the in-progress partial and append the committed text instead.
     case committed(text: String)
     /// An error occurred during streaming.
     case error(String)
