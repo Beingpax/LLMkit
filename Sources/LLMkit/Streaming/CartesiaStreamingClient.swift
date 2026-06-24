@@ -1,21 +1,32 @@
 import Foundation
 
-/// Cartesia Ink real-time streaming transcription client.
+/// Cartesia Ink 2 real-time streaming transcription client.
 ///
-/// Connects via WebSocket to `wss://api.cartesia.ai/stt/websocket`.
+/// Connects via WebSocket to `wss://api.cartesia.ai/stt/turns/websocket`.
 /// Sends raw binary PCM audio (16-bit signed little-endian, 16 kHz).
-/// Use `"finalize"` to flush pending audio; `"done"` for graceful session close.
-/// API docs: https://docs.cartesia.ai/api-reference/stt/stt
+/// Uses Cartesia turn events for partial and final transcript delivery.
+/// API docs: https://docs.cartesia.ai/api-reference/stt/turns/websocket
 public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unchecked Sendable {
+    public static let defaultEndpoint = "wss://api.cartesia.ai/stt/turns/websocket"
+    public static let defaultCartesiaVersion = "2026-03-01"
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private var receiveTask: Task<Void, Never>?
+    private var didSendClose = false
+    private let endpoint: String
+    private let cartesiaVersion: String
 
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
-    public init() {
+    public init(
+        endpoint: String = CartesiaStreamingClient.defaultEndpoint,
+        cartesiaVersion: String = CartesiaStreamingClient.defaultCartesiaVersion
+    ) {
+        self.endpoint = endpoint
+        self.cartesiaVersion = cartesiaVersion
+
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -28,22 +39,24 @@ public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unc
         eventsContinuation?.finish()
     }
 
-    /// Cartesia STT does not support custom vocabulary — the parameter is accepted for protocol
-    /// conformance but silently ignored.
-    public func connect(apiKey: String, model: String, language: String?, customVocabulary: [String] = []) async throws {
-        var components = URLComponents(string: "wss://api.cartesia.ai/stt/websocket")!
+    /// Ink 2 auto-turn STT is English-only and does not support custom vocabulary.
+    /// Those parameters are accepted for protocol conformance but ignored.
+    public func connect(apiKey: String, model: String, language _: String?, customVocabulary _: [String] = []) async throws {
+        guard var components = URLComponents(string: endpoint) else {
+            throw LLMKitError.invalidURL(endpoint)
+        }
 
-        let lang = (language?.isEmpty == false && language != "auto") ? language! : "en"
-        components.queryItems = [
+        let queryItems = [
             URLQueryItem(name: "model", value: model),
-            URLQueryItem(name: "language", value: lang),
             URLQueryItem(name: "encoding", value: "pcm_s16le"),
             URLQueryItem(name: "sample_rate", value: "16000"),
-            URLQueryItem(name: "cartesia_version", value: "2026-03-01"),
+            URLQueryItem(name: "cartesia_version", value: cartesiaVersion),
         ]
 
+        components.queryItems = queryItems
+
         guard let url = components.url else {
-            throw LLMKitError.invalidURL("wss://api.cartesia.ai/stt/websocket")
+            throw LLMKitError.invalidURL(endpoint)
         }
 
         var request = URLRequest(url: url)
@@ -53,10 +66,8 @@ public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unc
         let task = session.webSocketTask(with: request)
         self.urlSession = session
         self.webSocketTask = task
+        didSendClose = false
         task.resume()
-
-        // Cartesia has no session handshake message — emit sessionStarted immediately after connection.
-        eventsContinuation?.yield(.sessionStarted)
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -70,23 +81,27 @@ public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unc
         try await task.send(.data(data))
     }
 
-    /// Flushes any buffered audio and triggers transcription of remaining speech.
+    /// Closes the Ink 2 stream so Cartesia processes any buffered audio into turn events.
     public func commit() async throws {
         guard let task = webSocketTask else {
             throw LLMKitError.networkError("Not connected to Cartesia streaming.")
         }
-        try await task.send(.string("finalize"))
+        try await sendCloseCommand(on: task)
     }
 
     public func disconnect() async {
+        if let task = webSocketTask, !didSendClose {
+            try? await sendCloseCommand(on: task)
+        }
+
         receiveTask?.cancel()
         receiveTask = nil
-        try? await webSocketTask?.send(.string("done"))
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
         eventsContinuation?.finish()
+        didSendClose = false
     }
 
     /// Verifies the API key against the Cartesia voices endpoint.
@@ -98,7 +113,7 @@ public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unc
         var request = URLRequest(url: URL(string: "https://api.cartesia.ai/voices?limit=1")!)
         request.timeoutInterval = timeout
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-        request.setValue("2026-03-01", forHTTPHeaderField: "Cartesia-Version")
+        request.setValue(Self.defaultCartesiaVersion, forHTTPHeaderField: "Cartesia-Version")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -117,8 +132,17 @@ public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unc
 
     // MARK: - Private
 
+    private func sendCloseCommand(on task: URLSessionWebSocketTask) async throws {
+        guard !didSendClose else { return }
+        try await task.send(.string(#"{"type":"close"}"#))
+        didSendClose = true
+    }
+
     private func receiveLoop() async {
         guard let task = webSocketTask else { return }
+        defer {
+            eventsContinuation?.finish()
+        }
 
         while !Task.isCancelled {
             do {
@@ -148,20 +172,22 @@ public final class CartesiaStreamingClient: StreamingTranscriptionProvider, @unc
               let type = json["type"] as? String else { return }
 
         switch type {
-        case "transcript":
-            guard let transcriptText = json["text"] as? String else { return }
-            let isFinal = (json["is_final"] as? Bool) ?? false
-            if isFinal {
-                eventsContinuation?.yield(.committed(text: transcriptText))
-            } else {
-                eventsContinuation?.yield(.partial(text: transcriptText))
-            }
+        case "connected":
+            eventsContinuation?.yield(.sessionStarted)
+
+        case "turn.update", "turn.eager_end":
+            guard let transcriptText = json["transcript"] as? String else { return }
+            eventsContinuation?.yield(.partial(text: transcriptText))
+
+        case "turn.end":
+            guard let transcriptText = json["transcript"] as? String else { return }
+            eventsContinuation?.yield(.committed(text: transcriptText))
 
         case "error":
             let message = json["message"] as? String ?? json["title"] as? String ?? "Cartesia streaming error"
             eventsContinuation?.yield(.error(message))
 
-        case "flush_done", "done":
+        case "turn.start", "turn.resume":
             break
 
         default:
