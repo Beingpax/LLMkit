@@ -95,7 +95,7 @@ public struct AssemblyAIClient: Sendable {
         apiKey: String,
         model: String,
         language: String?,
-        prompt: String?,
+        prompt _: String?,
         customVocabulary: [String],
         timeout: TimeInterval
     ) async throws -> String {
@@ -119,11 +119,8 @@ public struct AssemblyAIClient: Sendable {
             payload["language_detection"] = true
         }
 
-        let trimmedPrompt = prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let keyterms = normalizedKeyterms(customVocabulary, model: primarySpeechModel)
-        if supportsPrompt(speechModels), !trimmedPrompt.isEmpty {
-            payload["prompt"] = appendKeyterms(keyterms, to: trimmedPrompt)
-        } else if !keyterms.isEmpty {
+        if !keyterms.isEmpty {
             payload["keyterms_prompt"] = keyterms
         }
 
@@ -183,19 +180,13 @@ public struct AssemblyAIClient: Sendable {
 
     private static func speechModels(for model: String) -> [String] {
         switch model {
-        case "universal-3-pro":
-            return ["universal-3-pro", "universal-2"]
+        case "universal-3-5-pro":
+            return ["universal-3-5-pro"]
         case "universal-2":
-            return ["universal-2"]
-        case "universal-streaming", "universal-streaming-english", "universal-streaming-multilingual", "whisper-rt":
             return ["universal-2"]
         default:
             return [model]
         }
-    }
-
-    private static func supportsPrompt(_ speechModels: [String]) -> Bool {
-        speechModels.contains("universal-3-pro")
     }
 
     private static func normalizedKeyterms(_ terms: [String], model: String) -> [String] {
@@ -213,11 +204,6 @@ public struct AssemblyAIClient: Sendable {
             if result.count == limit { break }
         }
         return result
-    }
-
-    private static func appendKeyterms(_ keyterms: [String], to prompt: String) -> String {
-        guard !keyterms.isEmpty else { return prompt }
-        return "\(prompt)\n\nBoost these terms when they appear in the audio: \(keyterms.joined(separator: ", "))."
     }
 }
 

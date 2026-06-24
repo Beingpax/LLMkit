@@ -1,17 +1,12 @@
 import Foundation
 
-/// AssemblyAI Universal Streaming client.
+/// AssemblyAI Universal-3.5 Pro streaming client.
 ///
 /// Connects to `wss://streaming.assemblyai.com/v3/ws` and sends raw PCM16,
 /// 16 kHz, mono, little-endian audio frames.
 public final class AssemblyAIStreamingClient: StreamingTranscriptionProvider, @unchecked Sendable {
     private static let keytermLimit = 100
     private static let minimumChunkBytes = 1_600
-    private static let universal3MinTurnSilenceMs = 1_500
-    private static let universal3MaxTurnSilenceMs = 4_000
-    private static let universalStreamingEndOfTurnConfidenceThreshold = "0.75"
-    private static let universalStreamingMinTurnSilenceMs = 2_000
-    private static let universalStreamingMaxTurnSilenceMs = 5_000
 
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -44,12 +39,12 @@ public final class AssemblyAIStreamingClient: StreamingTranscriptionProvider, @u
         apiKey: String,
         model: String,
         language: String?,
-        prompt: String?,
+        prompt _: String?,
         customVocabulary: [String] = []
     ) async throws {
         try validateAPIKey(apiKey)
 
-        guard let url = Self.streamingURL(model: model, language: language, prompt: prompt, customVocabulary: customVocabulary) else {
+        guard let url = Self.streamingURL(model: model, language: language, customVocabulary: customVocabulary) else {
             throw LLMKitError.invalidURL("wss://streaming.assemblyai.com/v3/ws")
         }
 
@@ -121,80 +116,32 @@ public final class AssemblyAIStreamingClient: StreamingTranscriptionProvider, @u
 
     // MARK: - Private
 
-    private static func streamingURL(model: String, language: String?, prompt: String?, customVocabulary: [String]) -> URL? {
+    private static func streamingURL(model: String, language: String?, customVocabulary: [String]) -> URL? {
+        guard model == "universal-3-5-pro" else {
+            return nil
+        }
+
         var components = URLComponents(string: "wss://streaming.assemblyai.com/v3/ws")
-        let shouldDetectLanguage = shouldDetectLanguage(language)
-        let resolvedStreamingModel = streamingModel(for: model, language: language)
         var queryItems = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm_s16le"),
-            URLQueryItem(name: "speech_model", value: resolvedStreamingModel)
+            URLQueryItem(name: "speech_model", value: "universal-3-5-pro"),
+            URLQueryItem(name: "mode", value: "balanced")
         ]
 
-        if isUniversal3Pro(model) {
-            queryItems.append(contentsOf: [
-                URLQueryItem(name: "min_turn_silence", value: "\(universal3MinTurnSilenceMs)"),
-                URLQueryItem(name: "max_turn_silence", value: "\(universal3MaxTurnSilenceMs)"),
-                URLQueryItem(name: "vad_threshold", value: "0.4"),
-                URLQueryItem(name: "speaker_labels", value: "false"),
-                URLQueryItem(name: "language_detection", value: "true"),
-                URLQueryItem(name: "u3_rt_pro_vad_threshold", value: "0.5")
-            ])
-        } else {
-            queryItems.append(contentsOf: [
-                URLQueryItem(name: "format_turns", value: "true"),
-                URLQueryItem(name: "end_of_turn_confidence_threshold", value: universalStreamingEndOfTurnConfidenceThreshold),
-                URLQueryItem(name: "min_turn_silence", value: "\(universalStreamingMinTurnSilenceMs)"),
-                URLQueryItem(name: "max_turn_silence", value: "\(universalStreamingMaxTurnSilenceMs)")
-            ])
-            if shouldDetectLanguage && resolvedStreamingModel == "universal-streaming-multilingual" {
-                queryItems.append(URLQueryItem(name: "language_detection", value: "true"))
-            }
+        if let language,
+           !language.isEmpty,
+           language != "auto" {
+            queryItems.append(URLQueryItem(name: "language_code", value: language))
         }
 
-        let supportsPrompt = isUniversal3Pro(model)
-        let trimmedPrompt = supportsPrompt ? (prompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") : ""
         let keyterms = normalizedKeyterms(customVocabulary)
-        if !trimmedPrompt.isEmpty {
-            queryItems.append(URLQueryItem(name: "prompt", value: trimmedPrompt))
-        }
-        if supportsKeyterms(model), let keytermsJSON = jsonArrayString(keyterms), !keyterms.isEmpty {
+        if let keytermsJSON = jsonArrayString(keyterms), !keyterms.isEmpty {
             queryItems.append(URLQueryItem(name: "keyterms_prompt", value: keytermsJSON))
         }
 
         components?.queryItems = queryItems
         return components?.url
-    }
-
-    private static func isUniversal3Pro(_ model: String) -> Bool {
-        model == "universal-3-pro" || model == "u3-rt-pro"
-    }
-
-    private static func shouldDetectLanguage(_ language: String?) -> Bool {
-        guard let language else { return true }
-        return language.isEmpty || language == "auto"
-    }
-
-    private static func supportsKeyterms(_ model: String) -> Bool {
-        switch model {
-        case "universal-3-pro", "u3-rt-pro", "universal-streaming", "universal-streaming-english", "universal-streaming-multilingual":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private static func streamingModel(for model: String, language: String?) -> String {
-        if model == "universal-3-pro" || model == "u3-rt-pro" {
-            return "u3-rt-pro"
-        }
-        if model == "universal-streaming-english" || model == "universal-streaming-multilingual" || model == "whisper-rt" {
-            return model
-        }
-        guard let language, !language.isEmpty, language != "auto" else {
-            return "universal-streaming-multilingual"
-        }
-        return language == "en" ? "universal-streaming-english" : "universal-streaming-multilingual"
     }
 
     private static func normalizedKeyterms(_ customVocabulary: [String]) -> [String] {
