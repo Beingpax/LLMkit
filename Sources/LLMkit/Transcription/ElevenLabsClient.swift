@@ -13,6 +13,7 @@ public struct ElevenLabsClient: Sendable {
     ///   - apiKey: ElevenLabs API key.
     ///   - model: Model name (e.g. `"scribe_v1"`, `"scribe_v2"`).
     ///   - language: Optional language code. Pass `nil` for auto-detect.
+    ///   - customVocabulary: Optional keyterms to bias recognition toward.
     ///   - timeout: Request timeout in seconds (default 30).
     /// - Returns: The transcribed text.
     public static func transcribe(
@@ -21,6 +22,7 @@ public struct ElevenLabsClient: Sendable {
         apiKey: String,
         model: String,
         language: String? = nil,
+        customVocabulary: [String] = [],
         timeout: TimeInterval = 30
     ) async throws -> String {
         try validateAPIKey(apiKey)
@@ -38,6 +40,10 @@ public struct ElevenLabsClient: Sendable {
             form.addField(name: "language_code", value: language)
         }
 
+        for keyterm in normalizedKeyterms(customVocabulary) {
+            form.addField(name: "keyterms", value: keyterm)
+        }
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
@@ -50,6 +56,34 @@ public struct ElevenLabsClient: Sendable {
 
         let decoded = try decodeJSON(ElevenLabsResponse.self, from: data)
         return decoded.text
+    }
+
+    private static func normalizedKeyterms(_ terms: [String]) -> [String] {
+        let unsupportedCharacters = Set("<>{}[]\\")
+        var seen = Set<String>()
+        var result: [String] = []
+
+        for term in terms {
+            let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            let wordCount = trimmed.split(whereSeparator: { $0.isWhitespace }).count
+
+            guard !trimmed.isEmpty,
+                  trimmed.count <= 50,
+                  wordCount <= 5,
+                  !trimmed.contains(where: { unsupportedCharacters.contains($0) }) else {
+                continue
+            }
+
+            let key = trimmed.lowercased()
+            guard !seen.contains(key) else { continue }
+
+            seen.insert(key)
+            result.append(trimmed)
+
+            if result.count == 1_000 { break }
+        }
+
+        return result
     }
 
     /// Verifies that an ElevenLabs API key is valid.

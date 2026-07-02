@@ -38,6 +38,10 @@ public final class ElevenLabsStreamingClient: StreamingTranscriptionProvider, @u
             queryItems.append(URLQueryItem(name: "language_code", value: language))
         }
 
+        for keyterm in Self.normalizedKeyterms(customVocabulary) {
+            queryItems.append(URLQueryItem(name: "keyterms", value: keyterm))
+        }
+
         components.queryItems = queryItems
 
         guard let url = components.url else {
@@ -77,6 +81,32 @@ public final class ElevenLabsStreamingClient: StreamingTranscriptionProvider, @u
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
         }
+    }
+
+    private static func normalizedKeyterms(_ terms: [String]) -> [String] {
+        let unsupportedCharacters = Set("<>{}[]\\")
+        var seen = Set<String>()
+        var result: [String] = []
+
+        for term in terms {
+            let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard !trimmed.isEmpty,
+                  trimmed.count <= 20,
+                  !trimmed.contains(where: { unsupportedCharacters.contains($0) }) else {
+                continue
+            }
+
+            let key = trimmed.lowercased()
+            guard !seen.contains(key) else { continue }
+
+            seen.insert(key)
+            result.append(trimmed)
+
+            if result.count == 50 { break }
+        }
+
+        return result
     }
 
     public func sendAudioChunk(_ data: Data) async throws {
