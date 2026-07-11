@@ -11,7 +11,7 @@ public struct ElevenLabsClient: Sendable {
     ///   - audioData: Raw audio bytes.
     ///   - fileName: Name of the audio file (e.g. `"recording.wav"`).
     ///   - apiKey: ElevenLabs API key.
-    ///   - model: Model name (e.g. `"scribe_v1"`, `"scribe_v2"`).
+    ///   - model: Model name (e.g. `"scribe_v2"`).
     ///   - language: Optional language code. Pass `nil` for auto-detect.
     ///   - customVocabulary: Optional keyterms to bias recognition toward.
     ///   - timeout: Request timeout in seconds (default 30).
@@ -39,6 +39,8 @@ public struct ElevenLabsClient: Sendable {
         if let language, !language.isEmpty {
             form.addField(name: "language_code", value: language)
         }
+
+        form.addField(name: "no_verbatim", value: "true")
 
         for keyterm in normalizedKeyterms(customVocabulary) {
             form.addField(name: "keyterms", value: keyterm)
