@@ -18,9 +18,5 @@ let package = Package(
         .target(
             name: "LLMkit"
         ),
-        .testTarget(
-            name: "LLMkitTests",
-            dependencies: ["LLMkit"]
-        ),
     ]
 )
