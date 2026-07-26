@@ -8,15 +8,19 @@ public enum GeminiThinkingLevel: String, Encodable, Sendable {
     case high
 }
 
-/// Client for Google's native Gemini Interactions API (`/v1/interactions`).
+/// Client for Google's native Gemini Interactions API.
 ///
-/// Uses the stable API, native `x-goog-api-key` authentication, and stateless
-/// requests by default. Sampling parameters are intentionally omitted because
-/// current Gemini models are optimized for their defaults and newer models
-/// deprecate `temperature`, `top_p`, and `top_k`.
+/// Uses the stable API for generally available models and the beta API required
+/// by preview models. Requests use native `x-goog-api-key` authentication and
+/// are stateless by default. Sampling parameters are intentionally omitted
+/// because current Gemini models are optimized for their defaults and newer
+/// models deprecate `temperature`, `top_p`, and `top_k`.
 public struct GeminiLLMClient: Sendable {
-    static let interactionEndpoint = URL(
+    static let stableInteractionEndpoint = URL(
         string: "https://generativelanguage.googleapis.com/v1/interactions"
+    )!
+    static let previewInteractionEndpoint = URL(
+        string: "https://generativelanguage.googleapis.com/v1beta/interactions"
     )!
     static let modelsEndpoint = URL(
         string: "https://generativelanguage.googleapis.com/v1/models"
@@ -45,7 +49,7 @@ public struct GeminiLLMClient: Sendable {
         timeout: TimeInterval = 30
     ) async throws -> String {
         let request = try makeChatCompletionRequest(
-            endpoint: interactionEndpoint,
+            endpoint: interactionEndpoint(for: model),
             apiKey: apiKey,
             model: model,
             messages: messages,
@@ -57,6 +61,12 @@ public struct GeminiLLMClient: Sendable {
         let (data, response) = try await performRequest(request, timeout: timeout)
         try validateHTTPResponse(response, data: data)
         return try decodeChatCompletionResponse(from: data)
+    }
+
+    static func interactionEndpoint(for model: String) -> URL {
+        model.lowercased().contains("-preview")
+            ? previewInteractionEndpoint
+            : stableInteractionEndpoint
     }
 
     /// Verifies a Gemini API key with the stable native models endpoint.
@@ -85,7 +95,7 @@ public struct GeminiLLMClient: Sendable {
     }
 
     static func makeChatCompletionRequest(
-        endpoint: URL = interactionEndpoint,
+        endpoint: URL,
         apiKey: String,
         model: String,
         messages: [ChatMessage],
