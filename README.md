@@ -12,7 +12,7 @@ LLMkit is a pure networking layer — no UI, no persistence, no app state. It ha
 - `DeepgramClient`, `ElevenLabsClient`, `SonioxClient`, `MistralTranscriptionClient`, `GeminiTranscriptionClient`, `OpenAITranscriptionClient`
 
 **LLM Chat Completion** (messages → response):
-- `AnthropicLLMClient`, `OpenAILLMClient`, `OllamaClient`, `OpenRouterClient`
+- `AnthropicLLMClient`, `GeminiLLMClient`, `OpenAILLMClient`, `OllamaClient`, `OpenRouterClient`
 
 **Streaming Transcription** (live audio → real-time text via WebSocket):
 - `ElevenLabsStreamingClient`, `DeepgramStreamingClient`, `MistralStreamingClient`, `SonioxStreamingClient`
@@ -30,6 +30,14 @@ let text = try await DeepgramClient.transcribe(
 
 let response = try await AnthropicLLMClient.chatCompletion(
     apiKey: "...", model: "claude-sonnet-4-5-20250929", messages: [.user("Hello")]
+)
+
+let geminiResponse = try await GeminiLLMClient.chatCompletion(
+    apiKey: "...",
+    model: "gemini-3.6-flash",
+    messages: [.user("Hello")],
+    thinkingLevel: .minimal,
+    store: false
 )
 ```
 

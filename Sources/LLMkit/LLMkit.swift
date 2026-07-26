@@ -13,4 +13,5 @@
 //
 // LLM clients:
 //   - AnthropicLLMClient
+//   - GeminiLLMClient
 //   - OpenAILLMClient
