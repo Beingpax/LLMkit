@@ -6,6 +6,35 @@ import Foundation
 /// Groq, Cerebras, Gemini (via OpenAI proxy), OpenAI, Mistral, OpenRouter, Ollama, and custom endpoints.
 public struct OpenAILLMClient: Sendable {
 
+    /// Verifies an OpenAI API key using the models endpoint.
+    public static func verifyAPIKey(
+        _ apiKey: String,
+        timeout: TimeInterval = 10
+    ) async -> (isValid: Bool, errorMessage: String?) {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            return (false, "API key is missing or empty.")
+        }
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return (false, "No HTTP response received.")
+            }
+            if (200..<300).contains(http.statusCode) {
+                return (true, nil)
+            }
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            return (false, message)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
     /// Sends a chat completion request to an OpenAI-compatible API.
     ///
     /// - Parameters:

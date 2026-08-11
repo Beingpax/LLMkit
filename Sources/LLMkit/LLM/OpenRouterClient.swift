@@ -33,23 +33,39 @@ public struct OpenRouterClient: Sendable {
         return models.sorted()
     }
 
-    /// Verifies an API key by making a minimal chat completion request to OpenRouter.
+    /// Verifies an API key using OpenRouter's key endpoint.
     ///
     /// - Parameters:
     ///   - apiKey: OpenRouter API key.
-    ///   - model: Model to use for verification (default `"openai/gpt-oss-120b"`).
     ///   - timeout: Request timeout in seconds (default 10).
     /// - Returns: A tuple of (isValid, errorMessage). `errorMessage` is `nil` on success.
     public static func verifyAPIKey(
         _ apiKey: String,
-        model: String = "openai/gpt-oss-120b",
         timeout: TimeInterval = 10
     ) async -> (isValid: Bool, errorMessage: String?) {
-        await OpenAILLMClient.verifyAPIKey(
-            baseURL: chatCompletionsURL,
-            apiKey: apiKey,
-            model: model,
-            timeout: timeout
-        )
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            return (false, "API key is missing or empty.")
+        }
+
+        let url = URL(string: "https://openrouter.ai/api/v1/key")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return (false, "No HTTP response received.")
+            }
+            if (200..<300).contains(http.statusCode) {
+                return (true, nil)
+            }
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(http.statusCode)"
+            return (false, message)
+        } catch {
+            return (false, error.localizedDescription)
+        }
     }
 }
