@@ -1,0 +1,21 @@
+Sources/LLMkit/LLM/OpenRouterClient.swift
+  s_e4ce125e813db2::t_f021530e32a0ac 36,46-69
+Sources/LLMkit/LLM/OpenAILLMClient.swift
+  s_e4ce125e813db2::t_7805cab3d25d68 9-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3b9086e3df729f39c2ca8951d09fb6ef4d4a193b",
+  "prompts": {},
+  "sessions": {
+    "s_e4ce125e813db2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff0e7-a2b6-7e21-886b-fb1b95c826c0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Prakash Joshi Pax <101010368+Beingpax@users.noreply.github.com>"
+    }
+  }
+}
