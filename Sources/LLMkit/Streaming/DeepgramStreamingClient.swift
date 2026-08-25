@@ -37,7 +37,6 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "channels", value: "1"),
             URLQueryItem(name: "smart_format", value: "true"),
-            URLQueryItem(name: "numerals", value: "true"),
             URLQueryItem(name: "interim_results", value: "true")
         ]
 
@@ -45,7 +44,7 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
             queryItems.append(URLQueryItem(name: "language", value: language))
         }
 
-        for term in customVocabulary.prefix(50) {
+        for term in customVocabulary.prefix(100) {
             queryItems.append(URLQueryItem(name: "keyterm", value: term))
         }
 

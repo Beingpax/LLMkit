@@ -12,7 +12,8 @@ public struct DeepgramClient: Sendable {
     ///   - audioData: Raw audio bytes (WAV/PCM format).
     ///   - apiKey: Deepgram API key.
     ///   - model: Model name (e.g. `"nova-3"`, `"nova-3-medical"`).
-    ///   - language: Optional BCP-47 language code. Pass `nil` for auto-detect.
+    ///   - language: Optional BCP-47 language code. Deepgram defaults to English when omitted. Pass `"multi"`
+    ///     with Nova-3 to transcribe supported multilingual or code-switching audio.
     ///   - smartFormat: Enable smart formatting (default `true`).
     ///   - punctuate: Enable punctuation (default `true`).
     ///   - paragraphs: Enable paragraph detection (default `true`).
@@ -43,7 +44,7 @@ public struct DeepgramClient: Sendable {
             queryItems.append(URLQueryItem(name: "language", value: language))
         }
 
-        for term in customVocabulary {
+        for term in customVocabulary.prefix(100) {
             queryItems.append(URLQueryItem(name: "keyterm", value: term))
         }
 

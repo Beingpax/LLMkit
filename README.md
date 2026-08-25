@@ -49,6 +49,10 @@ try await client.connect(apiKey: "...", model: "nova-3", language: "en")
 for await event in client.transcriptionEvents { /* .partial, .committed, .error */ }
 ```
 
+For Nova-3 multilingual and code-switching transcription, pass `language: "multi"`. Deepgram defaults an
+omitted language to English. Both the batch and streaming clients send custom vocabulary as Nova-3 `keyterm`
+parameters; up to 100 terms are accepted by the client, subject to Deepgram's 500-token total limit.
+
 ## Requirements
 
 - Swift 6.2+, macOS 14+, iOS 17+
