@@ -41,7 +41,8 @@ public struct GeminiTranscriptionClient: Sendable {
                     GeminiPart(text: "Please transcribe this audio file. Provide only the transcribed text.", inlineData: nil),
                     GeminiPart(text: nil, inlineData: GeminiInlineData(mimeType: mimeType, data: base64Audio))
                 ])
-            ]
+            ],
+            generationConfig: generationConfig(for: model)
         )
 
         do {
@@ -95,12 +96,30 @@ public struct GeminiTranscriptionClient: Sendable {
             return (false, error.localizedDescription)
         }
     }
+
+    private static func generationConfig(for model: String) -> GeminiTranscriptionGenerationConfig? {
+        if model.lowercased() == "gemini-3.7-flash" {
+            return GeminiTranscriptionGenerationConfig(
+                thinkingConfig: GeminiTranscriptionThinkingConfig(thinkingLevel: "low")
+            )
+        }
+        return nil
+    }
 }
 
 // MARK: - Request Models
 
 private struct GeminiRequest: Encodable, Sendable {
     let contents: [GeminiContent]
+    let generationConfig: GeminiTranscriptionGenerationConfig?
+}
+
+private struct GeminiTranscriptionGenerationConfig: Encodable, Sendable {
+    let thinkingConfig: GeminiTranscriptionThinkingConfig
+}
+
+private struct GeminiTranscriptionThinkingConfig: Encodable, Sendable {
+    let thinkingLevel: String
 }
 
 private struct GeminiContent: Encodable, Sendable {
