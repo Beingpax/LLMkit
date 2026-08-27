@@ -13,15 +13,24 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     private var urlSession: URLSession?
     private var receiveTask: Task<Void, Never>?
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
+    private var finalizationContinuation: AsyncStream<String>.Continuation?
     private var setupComplete = false
     private var setupError: String?
+    private var finalizationRequested = false
+    private var hasOutstandingInterim = false
+    private var accumulatedFinalText = ""
 
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+    public private(set) var finalizationEvents: AsyncStream<String>
 
     public init() {
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
+
+        var finalizationContinuation: AsyncStream<String>.Continuation!
+        finalizationEvents = AsyncStream { finalizationContinuation = $0 }
+        self.finalizationContinuation = finalizationContinuation
     }
 
     deinit {
@@ -29,6 +38,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         urlSession?.invalidateAndCancel()
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
     }
 
     public func connect(
@@ -50,6 +60,9 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         stateLock.withLock {
             setupComplete = false
             setupError = nil
+            finalizationRequested = false
+            hasOutstandingInterim = false
+            accumulatedFinalText = ""
         }
 
         let session = URLSession(configuration: .ephemeral)
@@ -102,13 +115,37 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     }
 
     public func commit() async throws {
+        stateLock.withLock {
+            finalizationRequested = true
+        }
         let message = GeminiLiveAudioMessage(
-            realtimeInput: GeminiLiveRealtimeInput(audio: nil, audioStreamEnd: true)
+            realtimeInput: GeminiLiveRealtimeInput(
+                audio: nil,
+                audioStreamEnd: true
+            )
         )
         try await sendJSON(message)
+
+        // audioStreamEnd flushes only audio Gemini has not already finalized.
+        // If automatic endpointing already produced the authoritative final
+        // transcript and no newer interim exists, there will be no additional
+        // inputTranscription event to wait for.
+        let alreadyFinalizedText = stateLock.withLock { () -> String? in
+            guard finalizationRequested,
+                  !hasOutstandingInterim,
+                  !accumulatedFinalText.isEmpty else { return nil }
+            finalizationRequested = false
+            return accumulatedFinalText
+        }
+        if let alreadyFinalizedText {
+            finalizationContinuation?.yield(alreadyFinalizedText)
+        }
     }
 
     public func disconnect() async {
+        stateLock.withLock {
+            finalizationRequested = false
+        }
         receiveTask?.cancel()
         receiveTask = nil
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -116,6 +153,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         urlSession?.invalidateAndCancel()
         urlSession = nil
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
     }
 
     private func waitForSetup() async throws {
@@ -200,12 +238,39 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
 
         if let interim = response.serverContent?.interimInputTranscription?.text,
            !interim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            stateLock.withLock {
+                hasOutstandingInterim = true
+            }
             eventsContinuation?.yield(.partial(text: interim))
         }
 
         if let final = response.serverContent?.inputTranscription?.text {
+            let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                stateLock.withLock {
+                    accumulatedFinalText = accumulatedFinalText.isEmpty
+                        ? trimmed
+                        : accumulatedFinalText + " " + trimmed
+                    hasOutstandingInterim = false
+                }
+            } else {
+                stateLock.withLock {
+                    hasOutstandingInterim = false
+                }
+            }
             eventsContinuation?.yield(.committed(text: final))
+            // audioStreamEnd asks Gemini to flush the current audio stream. The
+            // resulting inputTranscription is the authoritative finalized text.
+            let finalText = stateLock.withLock { () -> String? in
+                guard finalizationRequested else { return nil }
+                finalizationRequested = false
+                return accumulatedFinalText
+            }
+            if let finalText {
+                finalizationContinuation?.yield(finalText)
+            }
         }
+
     }
 
     private static func normalizedVocabulary(_ terms: [String]) -> [String] {

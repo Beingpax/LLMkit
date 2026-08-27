@@ -12,13 +12,20 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
     private var receiveTask: Task<Void, Never>?
     private var keepaliveTask: Task<Void, Never>?
     private var accumulatedFinalText = ""
+    private var didSendCloseStream = false
+    private var finalizationContinuation: AsyncStream<String>.Continuation?
 
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
+    public private(set) var finalizationEvents: AsyncStream<String>
 
     public init() {
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
+
+        var finalizationContinuation: AsyncStream<String>.Continuation!
+        finalizationEvents = AsyncStream { finalizationContinuation = $0 }
+        self.finalizationContinuation = finalizationContinuation
     }
 
     deinit {
@@ -27,6 +34,7 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         urlSession?.invalidateAndCancel()
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
     }
 
     public func connect(apiKey: String, model: String, language: String?, customVocabulary: [String] = []) async throws {
@@ -62,6 +70,8 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
 
         self.urlSession = session
         self.webSocketTask = task
+        accumulatedFinalText = ""
+        didSendCloseStream = false
         task.resume()
 
         eventsContinuation?.yield(.sessionStarted)
@@ -86,17 +96,21 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
             throw LLMKitError.networkError("Not connected to Deepgram streaming.")
         }
 
-        let finalizeMessage: [String: Any] = ["type": "Finalize"]
-        let jsonData = try JSONSerialization.data(withJSONObject: finalizeMessage)
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+
+        let closeMessage: [String: Any] = ["type": "CloseStream"]
+        let jsonData = try JSONSerialization.data(withJSONObject: closeMessage)
         let jsonString = String(data: jsonData, encoding: .utf8)!
         try await task.send(.string(jsonString))
+        didSendCloseStream = true
     }
 
     public func disconnect() async {
         keepaliveTask?.cancel()
         keepaliveTask = nil
 
-        if let task = webSocketTask {
+        if let task = webSocketTask, !didSendCloseStream {
             do {
                 let closeMessage: [String: Any] = ["type": "CloseStream"]
                 let jsonData = try JSONSerialization.data(withJSONObject: closeMessage)
@@ -114,7 +128,9 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
         urlSession?.invalidateAndCancel()
         urlSession = nil
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
         accumulatedFinalText = ""
+        didSendCloseStream = false
     }
 
     // MARK: - Private
@@ -153,7 +169,9 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
                     break
                 }
             } catch {
-                if !Task.isCancelled {
+                // CloseStream instructs Deepgram to send its final Results and
+                // Metadata, then close the WebSocket. That closure is expected.
+                if !Task.isCancelled && !didSendCloseStream {
                     eventsContinuation?.yield(.error(error.localizedDescription))
                 }
                 break
@@ -165,10 +183,14 @@ public final class DeepgramStreamingClient: StreamingTranscriptionProvider, @unc
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
-        // Skip control messages
-        if let type = json["type"] as? String,
-           type == "Metadata" || type == "SpeechStarted" || type == "UtteranceEnd" {
-            return
+        if let type = json["type"] as? String {
+            if type == "Metadata" {
+                finalizationContinuation?.yield(accumulatedFinalText)
+                return
+            }
+            if type == "SpeechStarted" || type == "UtteranceEnd" {
+                return
+            }
         }
 
         if let error = json["error"] as? String {
