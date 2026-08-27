@@ -75,9 +75,12 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
             await self?.receiveLoop()
         }
 
-        let liveModel = model == "gemini-3.5-transcribe"
-            ? "gemini-3.5-transcribe-live"
-            : model
+        let requestedModel = model.lowercased()
+        guard requestedModel == "gemini-3.5-transcribe"
+                || requestedModel == "gemini-3.5-transcribe-live" else {
+            throw LLMKitError.unsupportedModel(model)
+        }
+        let liveModel = "gemini-3.5-transcribe-live"
         let languageCodes: [String]
         if let language, !language.isEmpty, language.lowercased() != "auto" {
             languageCodes = [language]

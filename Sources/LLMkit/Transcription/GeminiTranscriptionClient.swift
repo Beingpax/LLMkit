@@ -8,10 +8,7 @@ public enum GeminiTranscriptionMode: String, Sendable {
     case smart
 }
 
-/// Client for the Gemini (Google AI) speech-to-text REST API.
-///
-/// General Gemini models use `generateContent`. The dedicated
-/// `gemini-3.5-transcribe` model uses the Interactions API and Files API.
+/// Client for the dedicated `gemini-3.5-transcribe` speech-to-text API.
 public struct GeminiTranscriptionClient: Sendable {
 
     /// Transcribes audio data using the Gemini API.
@@ -19,7 +16,7 @@ public struct GeminiTranscriptionClient: Sendable {
     /// - Parameters:
     ///   - audioData: Raw audio bytes.
     ///   - apiKey: Google AI / Gemini API key.
-    ///   - model: Model name (e.g. `"gemini-2.5-flash"`, `"gemini-2.5-pro"`).
+    ///   - model: Must be `"gemini-3.5-transcribe"`.
     ///   - mimeType: MIME type of the audio (default `"audio/wav"`).
     ///   - fileName: Display name used when uploading to the Gemini Files API.
     ///   - language: Optional BCP-47 language hint. Pass `nil` or `"auto"` for detection.
@@ -40,58 +37,21 @@ public struct GeminiTranscriptionClient: Sendable {
     ) async throws -> String {
         try validateAPIKey(apiKey)
 
-        if model.lowercased() == "gemini-3.5-transcribe" {
-            return try await transcribeWithDedicatedModel(
-                audioData: audioData,
-                apiKey: apiKey,
-                model: model,
-                mimeType: mimeType,
-                fileName: fileName,
-                language: language,
-                customVocabulary: customVocabulary,
-                mode: mode,
-                timeout: timeout
-            )
+        guard model.lowercased() == "gemini-3.5-transcribe" else {
+            throw LLMKitError.unsupportedModel(model)
         }
 
-        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent"
-        guard let url = URL(string: urlString) else {
-            throw LLMKitError.invalidURL(urlString)
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
-
-        let base64Audio = audioData.base64EncodedString()
-
-        let requestBody = GeminiRequest(
-            contents: [
-                GeminiContent(parts: [
-                    GeminiPart(text: "Please transcribe this audio file. Provide only the transcribed text.", inlineData: nil),
-                    GeminiPart(text: nil, inlineData: GeminiInlineData(mimeType: mimeType, data: base64Audio))
-                ])
-            ],
-            generationConfig: generationConfig(for: model)
+        return try await transcribeWithDedicatedModel(
+            audioData: audioData,
+            apiKey: apiKey,
+            model: model,
+            mimeType: mimeType,
+            fileName: fileName,
+            language: language,
+            customVocabulary: customVocabulary,
+            mode: mode,
+            timeout: timeout
         )
-
-        do {
-            request.httpBody = try JSONEncoder().encode(requestBody)
-        } catch {
-            throw LLMKitError.encodingError
-        }
-
-        let (data, response) = try await performRequest(request, timeout: timeout)
-        try validateHTTPResponse(response, data: data)
-
-        let decoded = try decodeJSON(GeminiResponse.self, from: data)
-        guard let candidate = decoded.candidates.first,
-              let part = candidate.content.parts.first,
-              !part.text.isEmpty else {
-            throw LLMKitError.noResultReturned
-        }
-        return part.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Verifies that a Gemini API key is valid by making a lightweight models list request.
@@ -126,15 +86,6 @@ public struct GeminiTranscriptionClient: Sendable {
         } catch {
             return (false, error.localizedDescription)
         }
-    }
-
-    private static func generationConfig(for model: String) -> GeminiTranscriptionGenerationConfig? {
-        if model.lowercased() == "gemini-3.7-flash" {
-            return GeminiTranscriptionGenerationConfig(
-                thinkingConfig: GeminiTranscriptionThinkingConfig(thinkingLevel: "low")
-            )
-        }
-        return nil
     }
 
     private static func transcribeWithDedicatedModel(
@@ -324,63 +275,6 @@ public struct GeminiTranscriptionClient: Sendable {
             throw LLMKitError.encodingError
         }
     }
-}
-
-// MARK: - Request Models
-
-private struct GeminiRequest: Encodable, Sendable {
-    let contents: [GeminiContent]
-    let generationConfig: GeminiTranscriptionGenerationConfig?
-}
-
-private struct GeminiTranscriptionGenerationConfig: Encodable, Sendable {
-    let thinkingConfig: GeminiTranscriptionThinkingConfig
-}
-
-private struct GeminiTranscriptionThinkingConfig: Encodable, Sendable {
-    let thinkingLevel: String
-}
-
-private struct GeminiContent: Encodable, Sendable {
-    let parts: [GeminiPart]
-}
-
-private struct GeminiPart: Encodable, Sendable {
-    let text: String?
-    let inlineData: GeminiInlineData?
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        if let text { try container.encode(text, forKey: .text) }
-        if let inlineData { try container.encode(inlineData, forKey: .inlineData) }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case text, inlineData
-    }
-}
-
-private struct GeminiInlineData: Encodable, Sendable {
-    let mimeType: String
-    let data: String
-}
-
-// MARK: - Response Models
-
-private struct GeminiResponse: Decodable, Sendable {
-    let candidates: [GeminiCandidate]
-}
-
-private struct GeminiCandidate: Decodable, Sendable {
-    let content: GeminiResponseContent
-}
-
-private struct GeminiResponseContent: Decodable, Sendable {
-    let parts: [GeminiResponsePart]
-}
-
-private struct GeminiResponsePart: Decodable, Sendable {
-    let text: String
 }
 
 // MARK: - Dedicated Transcription Models

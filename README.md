@@ -62,7 +62,7 @@ for await event in client.transcriptionEvents { /* .partial, .committed, .error 
 `GeminiTranscriptionClient` uploads dedicated-model audio through the Gemini Files API, creates a
 non-stored Interactions request, and deletes the uploaded file after the request completes. Use
 `GeminiStreamingClient` with `gemini-3.5-transcribe`; it automatically selects the corresponding
-`gemini-3.5-transcribe-live` model and uses Smart transcription.
+`gemini-3.5-transcribe-live` model and uses Verbatim transcription.
 
 For Nova-3 multilingual and code-switching transcription, pass `language: "multi"`. Deepgram defaults an
 omitted language to English. Both the batch and streaming clients send custom vocabulary as Nova-3 `keyterm`

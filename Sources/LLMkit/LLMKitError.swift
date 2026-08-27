@@ -8,6 +8,9 @@ public enum LLMKitError: Error, LocalizedError, Sendable {
     /// The constructed URL was invalid.
     case invalidURL(String)
 
+    /// The requested model is not supported by this client.
+    case unsupportedModel(String)
+
     /// A network-level failure occurred (no HTTP response received).
     case networkError(String)
 
@@ -32,6 +35,8 @@ public enum LLMKitError: Error, LocalizedError, Sendable {
             return "API key is missing or empty."
         case .invalidURL(let url):
             return "Invalid URL: \(url)"
+        case .unsupportedModel(let model):
+            return "Unsupported model: \(model)"
         case .networkError(let detail):
             return "Network error: \(detail)"
         case .httpError(let statusCode, let message):
