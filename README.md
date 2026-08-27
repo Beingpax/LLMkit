@@ -15,7 +15,7 @@ LLMkit is a pure networking layer — no UI, no persistence, no app state. It ha
 - `AnthropicLLMClient`, `GeminiLLMClient`, `OpenAILLMClient`, `OllamaClient`, `OpenRouterClient`
 
 **Streaming Transcription** (live audio → real-time text via WebSocket):
-- `ElevenLabsStreamingClient`, `DeepgramStreamingClient`, `MistralStreamingClient`, `SonioxStreamingClient`
+- `ElevenLabsStreamingClient`, `DeepgramStreamingClient`, `GeminiStreamingClient`, `MistralStreamingClient`, `SonioxStreamingClient`
 
 ## Usage
 
@@ -39,6 +39,16 @@ let geminiResponse = try await GeminiLLMClient.chatCompletion(
     thinkingLevel: .minimal,
     store: false
 )
+
+let geminiTranscript = try await GeminiTranscriptionClient.transcribe(
+    audioData: data,
+    apiKey: "...",
+    model: "gemini-3.5-transcribe",
+    fileName: "recording.wav",
+    language: "en-US",
+    customVocabulary: ["VoiceInk"],
+    mode: .smart
+)
 ```
 
 Streaming clients are class-based with `AsyncStream` event delivery:
@@ -48,6 +58,11 @@ let client = DeepgramStreamingClient()
 try await client.connect(apiKey: "...", model: "nova-3", language: "en")
 for await event in client.transcriptionEvents { /* .partial, .committed, .error */ }
 ```
+
+`GeminiTranscriptionClient` uploads dedicated-model audio through the Gemini Files API, creates a
+non-stored Interactions request, and deletes the uploaded file after the request completes. Use
+`GeminiStreamingClient` with `gemini-3.5-transcribe`; it automatically selects the corresponding
+`gemini-3.5-transcribe-live` model and uses Smart transcription.
 
 For Nova-3 multilingual and code-switching transcription, pass `language: "multi"`. Deepgram defaults an
 omitted language to English. Both the batch and streaming clients send custom vocabulary as Nova-3 `keyterm`
