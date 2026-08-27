@@ -1,0 +1,25 @@
+Sources/LLMkit/Streaming/GeminiStreamingClient.swift
+  s_905538e20fedda::t_dc92ef7e322272 1-280
+README.md
+  s_905538e20fedda::t_6619a3250edfed 18,42-51,62-65
+Sources/LLMkit/Transcription/GeminiTranscriptionClient.swift
+  s_905538e20fedda::t_93b50bbe8b5d2e 3-10,13-14,24-27,35-38,43-56,139-326,385-468
+Sources/LLMkit/LLMkit.swift
+  s_905538e20fedda::t_6619a3250edfed 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "930e4a2769ae188142c04f8f682c963efc587d9a",
+  "prompts": {},
+  "sessions": {
+    "s_905538e20fedda": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a042c8-fdf9-73a3-aa10-fcef193fa79c",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Prakash Joshi Pax <101010368+Beingpax@users.noreply.github.com>"
+    }
+  }
+}
