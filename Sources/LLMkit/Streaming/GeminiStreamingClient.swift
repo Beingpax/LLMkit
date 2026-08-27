@@ -79,7 +79,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
                 inputAudioTranscription: GeminiLiveTranscriptionConfig(
                     languageCodes: languageCodes,
                     customVocabulary: Self.normalizedVocabulary(customVocabulary),
-                    mode: "SMART"
+                    mode: "VERBATIM"
                 )
             )
         )
