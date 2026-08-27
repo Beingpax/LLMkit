@@ -10,7 +10,6 @@
 //   - MistralTranscriptionClient
 //   - SonioxClient
 //   - GeminiTranscriptionClient
-//   - GeminiStreamingClient
 //
 // LLM clients:
 //   - AnthropicLLMClient
