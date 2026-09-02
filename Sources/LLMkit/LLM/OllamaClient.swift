@@ -55,7 +55,8 @@ public struct OllamaClient: Sendable {
     ///   - model: Model name (e.g. `"llama2"`, `"mistral"`).
     ///   - prompt: The user prompt.
     ///   - systemPrompt: The system prompt.
-    ///   - temperature: Sampling temperature (default 0.3).
+    ///   - options: Optional per-request model parameters. Nil values are omitted so
+    ///     Ollama can use the model or Modelfile defaults.
     ///   - think: Optional native Ollama thinking control. Use `false` to disable thinking.
     ///   - timeout: Request timeout in seconds (default 30).
     /// - Returns: The generated response text.
@@ -64,37 +65,104 @@ public struct OllamaClient: Sendable {
         model: String,
         prompt: String,
         systemPrompt: String,
-        temperature: Double = 0.3,
+        options: OllamaGenerationOptions? = nil,
         think: Bool? = nil,
         timeout: TimeInterval = 30
     ) async throws -> String {
-        let url = baseURL.appendingPathComponent("api/generate")
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        var body: [String: Any] = [
-            "model": model,
-            "prompt": prompt,
-            "system": systemPrompt,
-            "temperature": temperature,
-            "stream": false
-        ]
-        if let think {
-            body["think"] = think
-        }
-
-        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
-            throw LLMKitError.encodingError
-        }
-        request.httpBody = bodyData
+        let request = try makeGenerateRequest(
+            baseURL: baseURL,
+            model: model,
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            options: options,
+            think: think
+        )
 
         let (data, response) = try await performRequest(request, timeout: timeout)
         try validateHTTPResponse(response, data: data)
 
         let decoded = try decodeJSON(OllamaGenerateResponse.self, from: data)
         return decoded.response
+    }
+
+    /// Compatibility overload for callers that previously supplied a temperature directly.
+    @available(*, deprecated, message: "Use the options parameter instead")
+    public static func generate(
+        baseURL: URL = defaultBaseURL,
+        model: String,
+        prompt: String,
+        systemPrompt: String,
+        temperature: Double,
+        think: Bool? = nil,
+        timeout: TimeInterval = 30
+    ) async throws -> String {
+        try await generate(
+            baseURL: baseURL,
+            model: model,
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            options: OllamaGenerationOptions(temperature: temperature),
+            think: think,
+            timeout: timeout
+        )
+    }
+
+    static func makeGenerateRequest(
+        baseURL: URL,
+        model: String,
+        prompt: String,
+        systemPrompt: String,
+        options: OllamaGenerationOptions?,
+        think: Bool?
+    ) throws -> URLRequest {
+        let url = baseURL.appendingPathComponent("api/generate")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        do {
+            request.httpBody = try JSONEncoder().encode(
+                OllamaGenerateRequest(
+                    model: model,
+                    prompt: prompt,
+                    system: systemPrompt,
+                    options: options?.isEmpty == false ? options : nil,
+                    stream: false,
+                    think: think
+                )
+            )
+        } catch {
+            throw LLMKitError.encodingError
+        }
+
+        return request
+    }
+}
+
+/// Optional per-request model parameters for Ollama's native generate API.
+public struct OllamaGenerationOptions: Codable, Sendable, Equatable {
+    public var temperature: Double?
+    public var topP: Double?
+    public var topK: Int?
+
+    public init(
+        temperature: Double? = nil,
+        topP: Double? = nil,
+        topK: Int? = nil
+    ) {
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+    }
+
+    var isEmpty: Bool {
+        temperature == nil && topP == nil && topK == nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case temperature
+        case topP = "top_p"
+        case topK = "top_k"
     }
 }
 
@@ -127,4 +195,13 @@ private struct OllamaModelsResponse: Decodable, Sendable {
 
 private struct OllamaGenerateResponse: Decodable, Sendable {
     let response: String
+}
+
+private struct OllamaGenerateRequest: Encodable, Sendable {
+    let model: String
+    let prompt: String
+    let system: String
+    let options: OllamaGenerationOptions?
+    let stream: Bool
+    let think: Bool?
 }
