@@ -37,7 +37,8 @@ public struct DeepgramClient: Sendable {
             URLQueryItem(name: "model", value: model),
             URLQueryItem(name: "smart_format", value: smartFormat ? "true" : "false"),
             URLQueryItem(name: "punctuate", value: punctuate ? "true" : "false"),
-            URLQueryItem(name: "paragraphs", value: paragraphs ? "true" : "false")
+            URLQueryItem(name: "paragraphs", value: paragraphs ? "true" : "false"),
+            URLQueryItem(name: "mip_opt_out", value: "true")
         ]
 
         if let language, !language.isEmpty {
