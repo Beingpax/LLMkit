@@ -13,6 +13,7 @@ public struct XAIClient: Sendable {
     ///   - apiKey: xAI API key.
     ///   - language: Optional BCP-47 language code. Pass `nil` for auto-detect.
     ///   - format: Whether to apply text formatting (Inverse Text Normalization). Requires `language`.
+    ///   - customVocabulary: Optional key terms that bias recognition. xAI accepts up to 100 terms of 50 characters each.
     ///   - timeout: Request timeout in seconds (default 60).
     /// - Returns: The transcribed text.
     public static func transcribe(
@@ -21,6 +22,7 @@ public struct XAIClient: Sendable {
         apiKey: String,
         language: String? = nil,
         format: Bool = false,
+        customVocabulary: [String] = [],
         timeout: TimeInterval = 60
     ) async throws -> String {
         try validateAPIKey(apiKey)
@@ -29,11 +31,21 @@ public struct XAIClient: Sendable {
 
         var form = MultipartFormData()
 
+        // Omit `model` so xAI selects its current default STT model (2.0).
+
         if let language, !language.isEmpty, language != "auto" {
             form.addField(name: "language", value: language)
             if format {
                 form.addField(name: "format", value: "true")
             }
+        }
+
+        let keyterms = customVocabulary.lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= 50 }
+            .prefix(100)
+        for keyterm in keyterms {
+            form.addField(name: "keyterm", value: keyterm)
         }
 
         // Per xAI docs, the `file` field must be the last field in the multipart body.

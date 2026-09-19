@@ -32,20 +32,29 @@ public final class XAIStreamingClient: StreamingTranscriptionProvider, @unchecke
 
     /// Connects to the xAI streaming endpoint.
     ///
-    /// The `model` parameter is accepted for protocol conformance but currently ignored —
-    /// the xAI STT endpoint does not expose per-model selection.
+    /// The shared provider protocol requires `model`, but LLMkit intentionally omits it
+    /// from the WebSocket URL so xAI selects its current default STT model (2.0).
     public func connect(apiKey: String, model: String, language: String?, customVocabulary: [String] = []) async throws {
         var components = URLComponents(string: "wss://api.x.ai/v1/stt")!
         var queryItems: [URLQueryItem] = [
             URLQueryItem(name: "sample_rate", value: "16000"),
             URLQueryItem(name: "encoding", value: "pcm"),
+            // VoiceInk displays these replaceable updates while the user is speaking.
             URLQueryItem(name: "interim_results", value: "true"),
-            // Default is 10ms which chops sentences at micro-pauses. 800ms feels natural for dictation.
+            // Longer than xAI's 400ms default to avoid finalizing ordinary dictation pauses.
             URLQueryItem(name: "endpointing", value: "800"),
         ]
 
         if let language, language != "auto", !language.isEmpty {
             queryItems.append(URLQueryItem(name: "language", value: language))
+        }
+
+        let keyterms = customVocabulary.lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= 50 }
+            .prefix(100)
+        for keyterm in keyterms {
+            queryItems.append(URLQueryItem(name: "keyterm", value: keyterm))
         }
 
         components.queryItems = queryItems
@@ -174,7 +183,9 @@ public final class XAIStreamingClient: StreamingTranscriptionProvider, @unchecke
 
         case "transcript.done":
             let text = (json["text"] as? String) ?? ""
-            eventsContinuation?.yield(.committed(text: text))
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                eventsContinuation?.yield(.committed(text: text))
+            }
             lockedUtteranceBuffer = ""
 
         case "error":
