@@ -44,24 +44,28 @@ public struct OpenRouterModel: Codable, Sendable, Hashable {
     public let name: String?
     public let supportedParameters: [String]
     public let reasoning: OpenRouterReasoningCapabilities?
+    public let architecture: OpenRouterModelArchitecture?
 
     enum CodingKeys: String, CodingKey {
         case id
         case name
         case supportedParameters = "supported_parameters"
         case reasoning
+        case architecture
     }
 
     public init(
         id: String,
         name: String? = nil,
         supportedParameters: [String] = [],
-        reasoning: OpenRouterReasoningCapabilities? = nil
+        reasoning: OpenRouterReasoningCapabilities? = nil,
+        architecture: OpenRouterModelArchitecture? = nil
     ) {
         self.id = id
         self.name = name
         self.supportedParameters = supportedParameters
         self.reasoning = reasoning
+        self.architecture = architecture
     }
 
     public init(from decoder: Decoder) throws {
@@ -70,6 +74,28 @@ public struct OpenRouterModel: Codable, Sendable, Hashable {
         name = try container.decodeIfPresent(String.self, forKey: .name)
         supportedParameters = try container.decodeIfPresent([String].self, forKey: .supportedParameters) ?? []
         reasoning = try container.decodeIfPresent(OpenRouterReasoningCapabilities.self, forKey: .reasoning)
+        architecture = try container.decodeIfPresent(OpenRouterModelArchitecture.self, forKey: .architecture)
+    }
+}
+
+public struct OpenRouterModelArchitecture: Codable, Sendable, Hashable {
+    public let inputModalities: [String]
+    public let outputModalities: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case inputModalities = "input_modalities"
+        case outputModalities = "output_modalities"
+    }
+
+    public init(inputModalities: [String], outputModalities: [String]) {
+        self.inputModalities = inputModalities
+        self.outputModalities = outputModalities
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        inputModalities = try container.decodeIfPresent([String].self, forKey: .inputModalities) ?? []
+        outputModalities = try container.decodeIfPresent([String].self, forKey: .outputModalities) ?? []
     }
 }
 
@@ -222,7 +248,23 @@ public struct OpenRouterClient: Sendable {
 
     /// Fetches full model capabilities needed to form compatible OpenRouter requests.
     public static func fetchModelCatalog(timeout: TimeInterval = 15) async throws -> [OpenRouterModel] {
-        var request = URLRequest(url: modelsURL)
+        try await fetchModelCatalog(from: modelsURL, timeout: timeout)
+    }
+
+    /// Fetches models accepted by OpenRouter's dedicated speech-to-text endpoint.
+    /// These models are excluded from the default text-output catalog.
+    public static func fetchTranscriptionModelCatalog(timeout: TimeInterval = 15) async throws -> [OpenRouterModel] {
+        var components = URLComponents(url: modelsURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "output_modalities", value: "transcription")]
+        let catalog = try await fetchModelCatalog(from: components.url!, timeout: timeout)
+        return catalog.filter {
+            $0.architecture?.inputModalities.contains("audio") == true
+                && $0.architecture?.outputModalities.contains("transcription") == true
+        }
+    }
+
+    private static func fetchModelCatalog(from url: URL, timeout: TimeInterval) async throws -> [OpenRouterModel] {
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
