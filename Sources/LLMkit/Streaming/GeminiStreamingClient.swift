@@ -24,7 +24,6 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
     public private(set) var finalizationEvents: AsyncStream<String>
 
-    /// Creates a client with a fixed transcription mode for its streaming session.
     public init(mode: GeminiTranscriptionMode = .verbatim) {
         self.mode = mode
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
