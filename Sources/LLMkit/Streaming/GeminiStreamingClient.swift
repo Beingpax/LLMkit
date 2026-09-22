@@ -50,9 +50,6 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         customVocabulary: [String] = []
     ) async throws {
         try validateAPIKey(apiKey)
-        let setup = try makeSetupMessage(
-            model: model, language: language, customVocabulary: customVocabulary
-        )
 
         guard var components = URLComponents(string: Self.endpoint) else {
             throw LLMKitError.invalidURL(Self.endpoint)
@@ -80,15 +77,6 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
             await self?.receiveLoop()
         }
 
-        try await sendJSON(setup)
-        try await waitForSetup()
-    }
-
-    func makeSetupMessage(
-        model: String,
-        language: String?,
-        customVocabulary: [String]
-    ) throws -> some Encodable {
         let requestedModel = model.lowercased()
         guard requestedModel == "gemini-3.5-transcribe"
                 || requestedModel == "gemini-3.5-transcribe-live" else {
@@ -102,7 +90,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
             languageCodes = []
         }
 
-        return GeminiLiveSetupMessage(
+        let setup = GeminiLiveSetupMessage(
             setup: GeminiLiveSetup(
                 model: "models/\(liveModel)",
                 generationConfig: GeminiLiveGenerationConfig(responseModalities: ["TEXT"]),
@@ -113,6 +101,8 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
                 )
             )
         )
+        try await sendJSON(setup)
+        try await waitForSetup()
     }
 
     public func sendAudioChunk(_ data: Data) async throws {
