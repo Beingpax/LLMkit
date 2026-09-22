@@ -62,17 +62,16 @@ for await event in client.transcriptionEvents { /* .partial, .committed, .error 
 `GeminiTranscriptionClient` uploads dedicated-model audio through the Gemini Files API, creates a
 non-stored Interactions request, and deletes the uploaded file after the request completes. Use
 `GeminiStreamingClient` with `gemini-3.5-transcribe`; it automatically selects the corresponding
-`gemini-3.5-transcribe-live` model and defaults to Verbatim transcription. Pass `mode: .smart`
+`gemini-3.5-transcribe-live` model and defaults to Verbatim transcription. Initialize it with `mode: .smart`
 to remove disfluencies and apply intent-aware formatting, or `mode: .verbatim` to preserve them:
 
 ```swift
-let client = GeminiStreamingClient()
+let client = GeminiStreamingClient(mode: .smart)
 try await client.connect(
     apiKey: "...",
     model: "gemini-3.5-transcribe",
     language: "en-US",
-    customVocabulary: ["VoiceInk"],
-    mode: .smart
+    customVocabulary: ["VoiceInk"]
 )
 ```
 

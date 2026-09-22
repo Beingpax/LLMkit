@@ -8,6 +8,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     private static let endpoint =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
+    private let mode: GeminiTranscriptionMode
     private let stateLock = NSLock()
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -23,7 +24,9 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
     public private(set) var finalizationEvents: AsyncStream<String>
 
-    public init() {
+    /// Creates a client with a fixed transcription mode for its streaming session.
+    public init(mode: GeminiTranscriptionMode = .verbatim) {
+        self.mode = mode
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -47,26 +50,9 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         language: String?,
         customVocabulary: [String] = []
     ) async throws {
-        try await connect(
-            apiKey: apiKey,
-            model: model,
-            language: language,
-            customVocabulary: customVocabulary,
-            mode: .verbatim
-        )
-    }
-
-    /// Connect with an explicit transcription mode. Existing callers use verbatim mode.
-    public func connect(
-        apiKey: String,
-        model: String,
-        language: String?,
-        customVocabulary: [String] = [],
-        mode: GeminiTranscriptionMode
-    ) async throws {
         try validateAPIKey(apiKey)
-        let setup = try Self.makeSetupMessage(
-            model: model, language: language, customVocabulary: customVocabulary, mode: mode
+        let setup = try makeSetupMessage(
+            model: model, language: language, customVocabulary: customVocabulary
         )
 
         guard var components = URLComponents(string: Self.endpoint) else {
@@ -99,11 +85,10 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         try await waitForSetup()
     }
 
-    static func makeSetupMessage(
+    func makeSetupMessage(
         model: String,
         language: String?,
-        customVocabulary: [String],
-        mode: GeminiTranscriptionMode
+        customVocabulary: [String]
     ) throws -> some Encodable {
         let requestedModel = model.lowercased()
         guard requestedModel == "gemini-3.5-transcribe"
