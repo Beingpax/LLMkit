@@ -47,7 +47,27 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         language: String?,
         customVocabulary: [String] = []
     ) async throws {
+        try await connect(
+            apiKey: apiKey,
+            model: model,
+            language: language,
+            customVocabulary: customVocabulary,
+            mode: .verbatim
+        )
+    }
+
+    /// Connect with an explicit transcription mode. Existing callers use verbatim mode.
+    public func connect(
+        apiKey: String,
+        model: String,
+        language: String?,
+        customVocabulary: [String] = [],
+        mode: GeminiTranscriptionMode
+    ) async throws {
         try validateAPIKey(apiKey)
+        let setup = try Self.makeSetupMessage(
+            model: model, language: language, customVocabulary: customVocabulary, mode: mode
+        )
 
         guard var components = URLComponents(string: Self.endpoint) else {
             throw LLMKitError.invalidURL(Self.endpoint)
@@ -75,6 +95,16 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
             await self?.receiveLoop()
         }
 
+        try await sendJSON(setup)
+        try await waitForSetup()
+    }
+
+    static func makeSetupMessage(
+        model: String,
+        language: String?,
+        customVocabulary: [String],
+        mode: GeminiTranscriptionMode
+    ) throws -> some Encodable {
         let requestedModel = model.lowercased()
         guard requestedModel == "gemini-3.5-transcribe"
                 || requestedModel == "gemini-3.5-transcribe-live" else {
@@ -88,19 +118,17 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
             languageCodes = []
         }
 
-        let setup = GeminiLiveSetupMessage(
+        return GeminiLiveSetupMessage(
             setup: GeminiLiveSetup(
                 model: "models/\(liveModel)",
                 generationConfig: GeminiLiveGenerationConfig(responseModalities: ["TEXT"]),
                 inputAudioTranscription: GeminiLiveTranscriptionConfig(
                     languageCodes: languageCodes,
                     customVocabulary: Self.normalizedVocabulary(customVocabulary),
-                    mode: "VERBATIM"
+                    mode: mode.rawValue.uppercased()
                 )
             )
         )
-        try await sendJSON(setup)
-        try await waitForSetup()
     }
 
     public func sendAudioChunk(_ data: Data) async throws {
