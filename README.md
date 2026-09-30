@@ -76,3 +76,34 @@ parameters; up to 100 terms are accepted by the client, subject to Deepgram's 50
 ## Error Handling
 
 All clients throw `LLMKitError` with cases for missing keys, HTTP errors, network failures, decoding issues, and timeouts.
+
+### AssemblyAI realtime model selection
+
+`AssemblyAIStreamingClient` forwards the `model` string to AssemblyAI without a
+hardcoded model list. Select `universal-3-6-pro`, `universal-3-6` (preview),
+`universal-3-5-pro`, or a future model compatible with the v3 streaming protocol.
+AssemblyAI validates model availability and language support.
+
+```swift
+let client = AssemblyAIStreamingClient()
+try await client.connect(
+    apiKey: apiKey,
+    model: "universal-3-6-pro",
+    language: "en",
+    prompt: nil,
+    customVocabulary: ["VoiceInk"],
+    additionalParameters: ["mode": "balanced"]
+)
+```
+
+Use `additionalParameters` for optional or newly introduced connection options.
+Values are URL-encoded; array or object values must be supplied as JSON strings.
+The selected model and authentication cannot be overridden through this dictionary.
+The `language` argument uses `language_codes`; omit it or pass `"auto"` for native
+multilingual transcription. A nonempty `prompt` is forwarded when explicitly set.
+
+Consume `transcriptionEvents` for live partials and finalized segments. After
+`commit()`, consume `finalizationEvents` to receive the complete transcript once
+AssemblyAI acknowledges termination. This final transcript incorporates revised
+formatting and avoids repeated turns. Existing consumers still receive the empty
+committed event at termination as a completion signal.
