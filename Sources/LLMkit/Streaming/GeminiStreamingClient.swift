@@ -8,6 +8,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     private static let endpoint =
         "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 
+    private let endpointURL: URL
     private let stateLock = NSLock()
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
@@ -17,13 +18,24 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     private var setupComplete = false
     private var setupError: String?
     private var finalizationRequested = false
-    private var hasOutstandingInterim = false
+    private var receivedFinalAfterCommit = false
+    private var generationCompletedAfterCommit = false
+    private var audioEnded = false
+    private var sentAudio = false
+    private var sessionError: String?
+    private var disconnecting = false
+    private var lifecycle: GeminiWebSocketLifecycle?
     private var accumulatedFinalText = ""
 
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
     public private(set) var finalizationEvents: AsyncStream<String>
 
-    public init() {
+    public convenience init() {
+        self.init(endpointURL: URL(string: Self.endpoint)!)
+    }
+
+    init(endpointURL: URL) {
+        self.endpointURL = endpointURL
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -48,11 +60,16 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         customVocabulary: [String] = []
     ) async throws {
         try validateAPIKey(apiKey)
+        let requestedModel = model.lowercased()
+        guard requestedModel == "gemini-3.5-transcribe"
+                || requestedModel == "gemini-3.5-transcribe-live" else {
+            throw LLMKitError.unsupportedModel(model)
+        }
 
-        guard var components = URLComponents(string: Self.endpoint) else {
+        guard var components = URLComponents(url: endpointURL, resolvingAgainstBaseURL: false) else {
             throw LLMKitError.invalidURL(Self.endpoint)
         }
-        components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
+        components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "key", value: apiKey)]
         guard let endpoint = components.url else {
             throw LLMKitError.invalidURL(Self.endpoint)
         }
@@ -61,25 +78,32 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
             setupComplete = false
             setupError = nil
             finalizationRequested = false
-            hasOutstandingInterim = false
+            receivedFinalAfterCommit = false
+            generationCompletedAfterCommit = false
+            audioEnded = false
+            sentAudio = false
+            sessionError = nil
+            disconnecting = false
             accumulatedFinalText = ""
         }
 
-        let session = URLSession(configuration: .ephemeral)
+        let lifecycle = GeminiWebSocketLifecycle()
+        let session = URLSession(configuration: .ephemeral, delegate: lifecycle, delegateQueue: nil)
         let task = session.webSocketTask(with: endpoint)
-        urlSession = session
-        webSocketTask = task
+        stateLock.withLock {
+            self.lifecycle = lifecycle
+            urlSession = session
+            webSocketTask = task
+        }
         task.resume()
 
-        receiveTask = Task { [weak self] in
+        let receiver = Task<Void, Never> { [weak self] in
             await self?.receiveLoop()
         }
-
-        let requestedModel = model.lowercased()
-        guard requestedModel == "gemini-3.5-transcribe"
-                || requestedModel == "gemini-3.5-transcribe-live" else {
-            throw LLMKitError.unsupportedModel(model)
+        stateLock.withLock {
+            receiveTask = receiver
         }
+
         let liveModel = "gemini-3.5-transcribe-live"
         let languageCodes: [String]
         if let language, !language.isEmpty, language.lowercased() != "auto" {
@@ -99,12 +123,24 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
                 )
             )
         )
-        try await sendJSON(setup)
-        try await waitForSetup()
+        do {
+            try await sendJSON(setup)
+            try await waitForSetup()
+        } catch {
+            await disconnect()
+            throw error
+        }
     }
 
     public func sendAudioChunk(_ data: Data) async throws {
         guard !data.isEmpty else { return }
+        try stateLock.withLock {
+            try requireStreaming()
+            guard !audioEnded else {
+                throw LLMKitError.networkError("Gemini audio input has already ended.")
+            }
+            sentAudio = true
+        }
         let message = GeminiLiveAudioMessage(
             realtimeInput: GeminiLiveRealtimeInput(
                 audio: GeminiLiveAudio(
@@ -114,60 +150,113 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
                 audioStreamEnd: nil
             )
         )
-        try await sendJSON(message)
+        do {
+            try await sendJSON(message)
+        } catch {
+            failSession(error.localizedDescription)
+            throw error
+        }
     }
 
     public func commit() async throws {
-        stateLock.withLock {
+        let shouldCommit = try stateLock.withLock {
+            try requireStreaming()
+            guard !audioEnded else { return false }
+            audioEnded = true
+            return true
+        }
+        guard shouldCommit else { return }
+
+        let message = GeminiLiveAudioMessage(
+            realtimeInput: GeminiLiveRealtimeInput(audio: nil, audioStreamEnd: true)
+        )
+        do {
+            try await sendJSON(message)
+        } catch {
+            failSession(error.localizedDescription)
+            throw error
+        }
+
+        try stateLock.withLock {
+            try requireStreaming()
             finalizationRequested = true
         }
-        let message = GeminiLiveAudioMessage(
-            realtimeInput: GeminiLiveRealtimeInput(
-                audio: nil,
-                audioStreamEnd: true
-            )
-        )
-        try await sendJSON(message)
 
-        // audioStreamEnd flushes only audio Gemini has not already finalized.
-        // If automatic endpointing already produced the authoritative final
-        // transcript and no newer interim exists, there will be no additional
-        // inputTranscription event to wait for.
-        let alreadyFinalizedText = stateLock.withLock { () -> String? in
-            guard finalizationRequested,
-                  !hasOutstandingInterim,
-                  !accumulatedFinalText.isEmpty else { return nil }
+        // An earlier final or the absence of an interim says nothing about audio
+        // still being processed. A fresh inputTranscription and generationComplete
+        // are both required; either can arrive first.
+        // If Gemini has already endpointed and sends no further result,
+        // the caller must time out and use its complete recording as a fallback.
+        let emptyInput = stateLock.withLock { () -> Bool in
+            guard !sentAudio, finalizationRequested, sessionError == nil else { return false }
             finalizationRequested = false
-            return accumulatedFinalText
+            return true
         }
-        if let alreadyFinalizedText {
-            finalizationContinuation?.yield(alreadyFinalizedText)
+        if emptyInput {
+            finalizationContinuation?.yield("")
         }
     }
 
     public func disconnect() async {
-        stateLock.withLock {
+        let resources = stateLock.withLock { () -> (URLSessionWebSocketTask?, URLSession?, GeminiWebSocketLifecycle?, Task<Void, Never>?) in
+            disconnecting = true
             finalizationRequested = false
+            let resources = (webSocketTask, urlSession, lifecycle, receiveTask)
+            webSocketTask = nil
+            urlSession = nil
+            lifecycle = nil
+            receiveTask = nil
+            return resources
         }
-        receiveTask?.cancel()
-        receiveTask = nil
-        webSocketTask?.cancel(with: .normalClosure, reason: nil)
-        webSocketTask = nil
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
+        let (socket, session, lifecycle, receiver) = resources
+        socket?.cancel(with: .normalClosure, reason: nil)
+        // Keep the URLSession alive for the closing handshake. Cancelling the
+        // session immediately can tear down the transport before the close frame.
+        if let lifecycle, await lifecycle.waitForClose() {
+            session?.finishTasksAndInvalidate()
+        } else {
+            session?.invalidateAndCancel()
+        }
+        receiver?.cancel()
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
+    }
+
+    /// Called only while holding stateLock.
+    private func requireStreaming() throws {
+        if let sessionError {
+            throw LLMKitError.networkError(sessionError)
+        }
+        guard setupComplete, !disconnecting, webSocketTask != nil else {
+            throw LLMKitError.networkError("Not connected to Gemini live transcription.")
+        }
+    }
+
+    private func failSession(_ message: String) {
+        let shouldReport = stateLock.withLock {
+            guard !disconnecting, sessionError == nil else { return false }
+            sessionError = message
+            setupError = message
+            finalizationRequested = false
+            return true
+        }
+        guard shouldReport else { return }
+        eventsContinuation?.yield(.error(message))
+        // Ending this stream wakes callers immediately so they can fall back;
+        // previously a dead connection could keep them waiting for ten seconds.
         finalizationContinuation?.finish()
     }
 
     private func waitForSetup() async throws {
         for _ in 0..<100 {
-            let state = stateLock.withLock { (setupComplete, setupError) }
+            let state = stateLock.withLock { (setupComplete, setupError, disconnecting) }
+            if state.2 { throw CancellationError() }
+            if let error = state.1 {
+                throw LLMKitError.networkError(error)
+            }
             if state.0 {
                 eventsContinuation?.yield(.sessionStarted)
                 return
-            }
-            if let error = state.1 {
-                throw LLMKitError.networkError(error)
             }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -175,7 +264,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     }
 
     private func sendJSON<T: Encodable>(_ value: T) async throws {
-        guard let task = webSocketTask else {
+        guard let task = stateLock.withLock({ webSocketTask }) else {
             throw LLMKitError.networkError("Not connected to Gemini live transcription.")
         }
 
@@ -192,7 +281,7 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
     }
 
     private func receiveLoop() async {
-        guard let task = webSocketTask else { return }
+        guard let task = stateLock.withLock({ webSocketTask }) else { return }
 
         while !Task.isCancelled {
             do {
@@ -209,20 +298,18 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
                 handleMessage(data)
             } catch {
                 guard !Task.isCancelled else { return }
-                let description = error.localizedDescription
-                stateLock.withLock {
-                    if !setupComplete {
-                        setupError = description
-                    }
-                }
-                eventsContinuation?.yield(.error(description))
+                failSession(error.localizedDescription)
                 return
             }
         }
     }
 
     private func handleMessage(_ data: Data) {
-        guard let response = try? JSONDecoder().decode(GeminiLiveResponse.self, from: data) else {
+        let response: GeminiLiveResponse
+        do {
+            response = try JSONDecoder().decode(GeminiLiveResponse.self, from: data)
+        } catch {
+            failSession("Invalid Gemini live transcription response.")
             return
         }
 
@@ -233,47 +320,43 @@ public final class GeminiStreamingClient: StreamingTranscriptionProvider, @unche
         }
 
         if let message = response.error?.message, !message.isEmpty {
-            stateLock.withLock {
-                setupError = message
-            }
-            eventsContinuation?.yield(.error(message))
+            failSession(message)
+            return
         }
 
         if let interim = response.serverContent?.interimInputTranscription?.text,
            !interim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            stateLock.withLock {
-                hasOutstandingInterim = true
-            }
             eventsContinuation?.yield(.partial(text: interim))
         }
 
         if let final = response.serverContent?.inputTranscription?.text {
-            let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                stateLock.withLock {
+            stateLock.withLock {
+                guard sessionError == nil, !disconnecting else { return }
+                let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
                     accumulatedFinalText = accumulatedFinalText.isEmpty
                         ? trimmed
                         : accumulatedFinalText + " " + trimmed
-                    hasOutstandingInterim = false
                 }
-            } else {
-                stateLock.withLock {
-                    hasOutstandingInterim = false
+                if finalizationRequested {
+                    receivedFinalAfterCommit = true
                 }
             }
             eventsContinuation?.yield(.committed(text: final))
-            // audioStreamEnd asks Gemini to flush the current audio stream. The
-            // resulting inputTranscription is the authoritative finalized text.
-            let finalText = stateLock.withLock { () -> String? in
-                guard finalizationRequested else { return nil }
-                finalizationRequested = false
-                return accumulatedFinalText
-            }
-            if let finalText {
-                finalizationContinuation?.yield(finalText)
-            }
         }
 
+        let finalizedText = stateLock.withLock { () -> String? in
+            if finalizationRequested, response.serverContent?.generationComplete == true {
+                generationCompletedAfterCommit = true
+            }
+            guard finalizationRequested, receivedFinalAfterCommit,
+                  generationCompletedAfterCommit, sessionError == nil, !disconnecting else { return nil }
+            finalizationRequested = false
+            return accumulatedFinalText
+        }
+        if let finalizedText {
+            finalizationContinuation?.yield(finalizedText)
+        }
     }
 
     private static func normalizedVocabulary(_ terms: [String]) -> [String] {
@@ -337,6 +420,7 @@ private struct GeminiLiveSetupComplete: Decodable, Sendable {}
 private struct GeminiLiveServerContent: Decodable, Sendable {
     let interimInputTranscription: GeminiLiveTranscript?
     let inputTranscription: GeminiLiveTranscript?
+    let generationComplete: Bool?
 }
 
 private struct GeminiLiveTranscript: Decodable, Sendable {
@@ -345,4 +429,40 @@ private struct GeminiLiveTranscript: Decodable, Sendable {
 
 private struct GeminiLiveError: Decodable, Sendable {
     let message: String
+}
+
+/// Observes actual task completion rather than cancelling the transport at close.
+private final class GeminiWebSocketLifecycle: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let closeEvents: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+
+    override init() {
+        (closeEvents, continuation) = AsyncStream.makeStream(of: Void.self)
+        super.init()
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                    didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        continuation.finish()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        continuation.finish()
+    }
+
+    func waitForClose() async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { [closeEvents] in
+                for await _ in closeEvents { }
+                return !Task.isCancelled
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(2))
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
 }
