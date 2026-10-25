@@ -3,7 +3,7 @@ import Foundation
 /// Client for the Mistral speech-to-text REST API.
 ///
 /// Sends audio as multipart/form-data to Mistral's `/v1/audio/transcriptions` endpoint.
-/// Uses the `x-api-key` header (not Bearer token).
+/// Authenticates with a Bearer API key.
 public struct MistralTranscriptionClient: Sendable {
 
     /// Transcribes audio data using the Mistral API.
@@ -12,7 +12,9 @@ public struct MistralTranscriptionClient: Sendable {
     ///   - audioData: Raw audio bytes.
     ///   - fileName: Name of the audio file (e.g. `"recording.wav"`).
     ///   - apiKey: Mistral API key.
-    ///   - model: Model name (e.g. `"voxtral-mini-latest"`).
+    ///   - model: Model name (e.g. `"voxtral-mini-transcribe-3-0"`).
+    ///   - language: Optional two-letter language code; nil or `"auto"` enables detection.
+    ///   - customVocabulary: Names and phrases to pass as context bias.
     ///   - timeout: Request timeout in seconds (default 30).
     /// - Returns: The transcribed text.
     public static func transcribe(
@@ -20,6 +22,8 @@ public struct MistralTranscriptionClient: Sendable {
         fileName: String = "audio.wav",
         apiKey: String,
         model: String,
+        language: String? = nil,
+        customVocabulary: [String] = [],
         timeout: TimeInterval = 30
     ) async throws -> String {
         try validateAPIKey(apiKey)
@@ -31,12 +35,21 @@ public struct MistralTranscriptionClient: Sendable {
         var form = MultipartFormData()
 
         form.addField(name: "model", value: model)
+        if let language, !language.isEmpty, language != "auto" {
+            form.addField(name: "language", value: language)
+        }
+        for term in customVocabulary {
+            let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                form.addField(name: "context_bias", value: trimmed)
+            }
+        }
         form.addFile(name: "file", fileName: fileName, mimeType: "audio/wav", fileData: audioData)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(form.contentType, forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await performUpload(request, data: form.data, timeout: timeout)
 

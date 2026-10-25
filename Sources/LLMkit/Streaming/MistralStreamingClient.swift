@@ -11,10 +11,15 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
     private var eventsContinuation: AsyncStream<StreamingTranscriptionEvent>.Continuation?
     private var receiveTask: Task<Void, Never>?
     private var accumulatedText = ""
+    private var finalizationContinuation: AsyncStream<String>.Continuation?
+    public let finalizationEvents: AsyncStream<String>
 
     public private(set) var transcriptionEvents: AsyncStream<StreamingTranscriptionEvent>
 
     public init() {
+        var finalContinuation: AsyncStream<String>.Continuation!
+        finalizationEvents = AsyncStream { finalContinuation = $0 }
+        finalizationContinuation = finalContinuation
         var continuation: AsyncStream<StreamingTranscriptionEvent>.Continuation!
         transcriptionEvents = AsyncStream { continuation = $0 }
         eventsContinuation = continuation
@@ -25,9 +30,11 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         urlSession?.invalidateAndCancel()
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
     }
 
     public func connect(apiKey: String, model: String, language: String?, customVocabulary: [String] = []) async throws {
+        try validateAPIKey(apiKey)
         var components = URLComponents(string: "wss://api.mistral.ai/v1/audio/transcriptions/realtime")!
         components.queryItems = [
             URLQueryItem(name: "model", value: model)
@@ -47,28 +54,16 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
         self.webSocketTask = task
         task.resume()
 
-        // Wait for session.created handshake
-        let message = try await task.receive()
-        switch message {
-        case .string(let text):
-            if let data = text.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let type = json["type"] as? String {
-                if type == "session.created" {
-                    eventsContinuation?.yield(.sessionStarted)
-                } else if type == "error" {
-                    let errorMsg = extractErrorMessage(from: json)
-                    throw LLMKitError.httpError(statusCode: 400, message: errorMsg)
-                }
-            }
-        case .data:
-            break
-        @unknown default:
-            break
+        do {
+            try await expectSessionEvent("session.created", from: task)
+            // Voxtral 3 locks settings when the first audio chunk arrives.
+            try await sendSessionUpdate(language: language, customVocabulary: customVocabulary)
+            try await expectSessionEvent("session.updated", from: task)
+            eventsContinuation?.yield(.sessionStarted)
+        } catch {
+            await disconnect()
+            throw error
         }
-
-        // Send session.update with audio format
-        try await sendSessionUpdate()
 
         receiveTask = Task { [weak self] in
             await self?.receiveLoop()
@@ -110,22 +105,52 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
         urlSession?.invalidateAndCancel()
         urlSession = nil
         eventsContinuation?.finish()
+        finalizationContinuation?.finish()
         accumulatedText = ""
     }
 
     // MARK: - Private
 
-    private func sendSessionUpdate() async throws {
+    private func expectSessionEvent(_ expectedType: String, from task: URLSessionWebSocketTask) async throws {
+        let message = try await task.receive()
+        let data: Data
+        switch message {
+        case .string(let text):
+            data = Data(text.utf8)
+        case .data(let bytes):
+            data = bytes
+        @unknown default:
+            throw LLMKitError.networkError("Unexpected Mistral session message.")
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String else {
+            throw LLMKitError.networkError("Invalid Mistral session message.")
+        }
+        if type == "error" {
+            throw LLMKitError.httpError(statusCode: 400, message: extractErrorMessage(from: json))
+        }
+        guard type == expectedType else {
+            throw LLMKitError.networkError("Expected Mistral \(expectedType), received \(type).")
+        }
+    }
+
+    private func sendSessionUpdate(language: String?, customVocabulary: [String]) async throws {
         guard let task = webSocketTask else { return }
 
+        var settings: [String: Any] = [
+            "audio_format": ["encoding": "pcm_s16le", "sample_rate": 16000],
+            "target_streaming_delay_ms": 480
+        ]
+        if let language, !language.isEmpty, language != "auto" {
+            settings["language"] = language
+        }
+        let vocabulary = customVocabulary.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if !vocabulary.isEmpty {
+            settings["context_bias"] = vocabulary
+        }
         let message: [String: Any] = [
             "type": "session.update",
-            "session": [
-                "audio_format": [
-                    "encoding": "pcm_s16le",
-                    "sample_rate": 16000
-                ]
-            ]
+            "session": settings
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: message)
@@ -152,6 +177,7 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
             } catch {
                 if !Task.isCancelled {
                     eventsContinuation?.yield(.error(error.localizedDescription))
+                    finalizationContinuation?.finish()
                 }
                 break
             }
@@ -171,8 +197,14 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
             }
 
         case "transcription.done":
-            let finalText = accumulatedText
+            guard let finalText = json["text"] as? String else {
+                eventsContinuation?.yield(.error("Mistral final transcription is missing text."))
+                finalizationContinuation?.finish()
+                return
+            }
             eventsContinuation?.yield(.committed(text: finalText))
+            finalizationContinuation?.yield(finalText)
+            finalizationContinuation?.finish()
             accumulatedText = ""
 
         case "transcription.language":
@@ -184,6 +216,7 @@ public final class MistralStreamingClient: StreamingTranscriptionProvider, @unch
         case "error":
             let errorMsg = extractErrorMessage(from: json)
             eventsContinuation?.yield(.error(errorMsg))
+            finalizationContinuation?.finish()
 
         default:
             break
