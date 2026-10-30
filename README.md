@@ -77,6 +77,14 @@ parameters; up to 100 terms are accepted by the client, subject to Deepgram's 50
 
 All clients throw `LLMKitError` with cases for missing keys, HTTP errors, network failures, decoding issues, and timeouts.
 
+Cloud chat completion clients (including OpenRouter) make up to three HTTP attempts
+for network failures, HTTP 429, and all 5xx responses, with 1-second and 2-second
+backoff. Ollama retains retries for HTTP 429, 500, 502, 503, and 504. Pass
+`retryOnTimeout: true` to these clients to also retry request
+timeouts and HTTP 408 responses immediately. All retries share the same three-attempt
+budget, and cancellation stops retries. Timeout retries are disabled by default;
+callers should not wrap these clients in another retry loop.
+
 ### AssemblyAI realtime model selection
 
 `AssemblyAIStreamingClient` forwards the `model` string to AssemblyAI without a

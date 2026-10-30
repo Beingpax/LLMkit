@@ -1,7 +1,10 @@
 import Foundation
 
 /// HTTP status codes that warrant automatic retry.
-private let retryableStatusCodes: Set<Int> = [429, 500, 502, 503, 504]
+let defaultRetryableStatusCodes: Set<Int> = [429, 500, 502, 503, 504]
+
+// Preserve chat completion retries for all server errors without changing other clients.
+let chatRetryableStatusCodes: Set<Int> = Set([429]).union(500...599)
 
 /// Validates that an API key is not empty.
 func validateAPIKey(_ apiKey: String) throws {
@@ -12,18 +15,24 @@ func validateAPIKey(_ apiKey: String) throws {
 
 /// Performs an HTTP request with automatic retry for transient failures.
 ///
-/// Retries on network errors and HTTP 429/5xx responses with exponential backoff (1s, 2s).
+/// Retries on network errors and the selected HTTP status codes with backoff (1s, 2s).
+/// When enabled, timeout retries (including HTTP 408) are immediate and share the same attempt budget.
 func performRequest(
     _ request: URLRequest,
     timeout: TimeInterval = 30,
-    maxRetries: Int = 2
+    maxRetries: Int = 2,
+    retryableStatusCodes: Set<Int> = defaultRetryableStatusCodes,
+    retryOnTimeout: Bool = false
 ) async throws -> (Data, URLResponse) {
     var req = request
     req.timeoutInterval = timeout
+    let maxRetries = max(0, maxRetries)
     var lastError: (any Error)?
+    var delayBeforeRetry = true
 
     for attempt in 0...maxRetries {
-        if attempt > 0 {
+        try Task.checkCancellation()
+        if attempt > 0 && delayBeforeRetry {
             let delay = UInt64(pow(2.0, Double(attempt - 1)) * 1_000_000_000)
             try await Task.sleep(nanoseconds: delay)
         }
@@ -34,8 +43,9 @@ func performRequest(
         do {
             let (data, response) = try await session.data(for: req)
             if let http = response as? HTTPURLResponse,
-               retryableStatusCodes.contains(http.statusCode),
+               (retryableStatusCodes.contains(http.statusCode) || (retryOnTimeout && http.statusCode == 408)),
                attempt < maxRetries {
+                delayBeforeRetry = http.statusCode != 408
                 lastError = LLMKitError.httpError(
                     statusCode: http.statusCode,
                     message: String(data: data, encoding: .utf8) ?? ""
@@ -46,9 +56,21 @@ func performRequest(
         } catch let error as LLMKitError {
             throw error
         } catch let error as NSError where error.domain == NSURLErrorDomain && error.code == NSURLErrorTimedOut {
-            throw LLMKitError.timeout
+            guard retryOnTimeout, attempt < maxRetries else {
+                throw LLMKitError.timeout
+            }
+            lastError = LLMKitError.timeout
+            delayBeforeRetry = false
         } catch {
+            try Task.checkCancellation()
+            let nsError = error as NSError
+            if error is CancellationError
+                || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+            {
+                throw error
+            }
             lastError = error
+            delayBeforeRetry = true
             if attempt < maxRetries { continue }
         }
     }
@@ -81,7 +103,7 @@ func performUpload(
         do {
             let (data, response) = try await session.upload(for: req, from: bodyData)
             if let http = response as? HTTPURLResponse,
-               retryableStatusCodes.contains(http.statusCode),
+               defaultRetryableStatusCodes.contains(http.statusCode),
                attempt < maxRetries {
                 lastError = LLMKitError.httpError(
                     statusCode: http.statusCode,

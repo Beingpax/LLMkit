@@ -15,6 +15,7 @@ public struct AnthropicLLMClient: Sendable {
     ///   - systemPrompt: Optional explicit system prompt. If provided, takes priority over system messages in the array.
     ///   - maxTokens: Maximum tokens in the response (default 8192).
     ///   - timeout: Request timeout in seconds (default 30).
+    ///   - retryOnTimeout: Retry timeouts within the three-attempt request budget (default false).
     /// - Returns: The assistant's response text.
     public static func chatCompletion(
         apiKey: String,
@@ -22,7 +23,8 @@ public struct AnthropicLLMClient: Sendable {
         messages: [ChatMessage],
         systemPrompt: String? = nil,
         maxTokens: Int = 8192,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        retryOnTimeout: Bool = false
     ) async throws -> String {
         try validateAPIKey(apiKey)
 
@@ -59,7 +61,12 @@ public struct AnthropicLLMClient: Sendable {
             throw LLMKitError.encodingError
         }
 
-        let (data, response) = try await performRequest(request, timeout: timeout)
+        let (data, response) = try await performRequest(
+            request,
+            timeout: timeout,
+            retryableStatusCodes: chatRetryableStatusCodes,
+            retryOnTimeout: retryOnTimeout
+        )
         try validateHTTPResponse(response, data: data)
 
         let decoded = try decodeJSON(AnthropicResponse.self, from: data)

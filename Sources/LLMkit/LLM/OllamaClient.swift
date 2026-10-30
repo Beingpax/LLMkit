@@ -59,6 +59,7 @@ public struct OllamaClient: Sendable {
     ///     Ollama can use the model or Modelfile defaults.
     ///   - think: Optional native Ollama thinking control. Use `false` to disable thinking.
     ///   - timeout: Request timeout in seconds (default 30).
+    ///   - retryOnTimeout: Retry timeouts within the three-attempt request budget (default false).
     /// - Returns: The generated response text.
     public static func generate(
         baseURL: URL = defaultBaseURL,
@@ -67,7 +68,8 @@ public struct OllamaClient: Sendable {
         systemPrompt: String,
         options: OllamaGenerationOptions? = nil,
         think: Bool? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        retryOnTimeout: Bool = false
     ) async throws -> String {
         let request = try makeGenerateRequest(
             baseURL: baseURL,
@@ -78,7 +80,7 @@ public struct OllamaClient: Sendable {
             think: think
         )
 
-        let (data, response) = try await performRequest(request, timeout: timeout)
+        let (data, response) = try await performRequest(request, timeout: timeout, retryOnTimeout: retryOnTimeout)
         try validateHTTPResponse(response, data: data)
 
         let decoded = try decodeJSON(OllamaGenerateResponse.self, from: data)

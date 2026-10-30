@@ -47,6 +47,7 @@ public struct OpenAILLMClient: Sendable {
     ///   - reasoningEffort: Optional reasoning effort parameter for supported models.
     ///   - extraBody: Optional dictionary of additional parameters to include in the request body (e.g. `["disable_reasoning": true]`).
     ///   - timeout: Request timeout in seconds (default 30).
+    ///   - retryOnTimeout: Retry timeouts within the three-attempt request budget (default false).
     /// - Returns: The assistant's response text.
     public static func chatCompletion(
         baseURL: URL,
@@ -57,7 +58,8 @@ public struct OpenAILLMClient: Sendable {
         temperature: Double = 0.3,
         reasoningEffort: String? = nil,
         extraBody: [String: Any]? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        retryOnTimeout: Bool = false
     ) async throws -> String {
         try validateAPIKey(apiKey)
 
@@ -94,7 +96,12 @@ public struct OpenAILLMClient: Sendable {
         }
         request.httpBody = body
 
-        let (data, response) = try await performRequest(request, timeout: timeout)
+        let (data, response) = try await performRequest(
+            request,
+            timeout: timeout,
+            retryableStatusCodes: chatRetryableStatusCodes,
+            retryOnTimeout: retryOnTimeout
+        )
         try validateHTTPResponse(response, data: data)
 
         let decoded = try decodeJSON(OpenAIChatResponse.self, from: data)

@@ -284,6 +284,8 @@ public struct OpenRouterClient: Sendable {
         try await fetchModelCatalog(timeout: timeout).map(\.id)
     }
 
+    /// Sends a chat completion with up to three attempts for transient failures.
+    /// Set `retryOnTimeout` to include timeouts in the same attempt budget.
     public static func chatCompletion(
         apiKey: String,
         model: String,
@@ -297,7 +299,8 @@ public struct OpenRouterClient: Sendable {
         includeRouterMetadata: Bool = true,
         appReferer: URL? = nil,
         appTitle: String? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        retryOnTimeout: Bool = false
     ) async throws -> OpenRouterCompletion {
         try validateAPIKey(apiKey)
 
@@ -339,7 +342,8 @@ public struct OpenRouterClient: Sendable {
         let (data, response) = try await performRequest(
             request,
             timeout: timeout,
-            maxRetries: 0
+            retryableStatusCodes: chatRetryableStatusCodes,
+            retryOnTimeout: retryOnTimeout
         )
         try validateOpenRouterResponse(response, data: data)
 

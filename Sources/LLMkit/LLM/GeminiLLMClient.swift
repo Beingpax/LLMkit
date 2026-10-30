@@ -38,6 +38,7 @@ public struct GeminiLLMClient: Sendable {
     ///   - thinkingLevel: Optional native Gemini thinking level.
     ///   - store: Whether Google should store the interaction. Defaults to `false`.
     ///   - timeout: Request timeout in seconds (default 30).
+    ///   - retryOnTimeout: Retry timeouts within the three-attempt request budget (default false).
     /// - Returns: The final model-output text.
     public static func chatCompletion(
         apiKey: String,
@@ -46,7 +47,8 @@ public struct GeminiLLMClient: Sendable {
         systemPrompt: String? = nil,
         thinkingLevel: GeminiThinkingLevel? = nil,
         store: Bool = false,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        retryOnTimeout: Bool = false
     ) async throws -> String {
         let request = try makeChatCompletionRequest(
             endpoint: interactionEndpoint(for: model),
@@ -58,7 +60,12 @@ public struct GeminiLLMClient: Sendable {
             store: store
         )
 
-        let (data, response) = try await performRequest(request, timeout: timeout)
+        let (data, response) = try await performRequest(
+            request,
+            timeout: timeout,
+            retryableStatusCodes: chatRetryableStatusCodes,
+            retryOnTimeout: retryOnTimeout
+        )
         try validateHTTPResponse(response, data: data)
         return try decodeChatCompletionResponse(from: data)
     }
