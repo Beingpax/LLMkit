@@ -1,9 +1,9 @@
 import Foundation
 
-/// Soniox stt-rt-v4 real-time streaming transcription client.
+/// Soniox real-time streaming transcription client, including stt-rt-v6.
 ///
 /// Connects via WebSocket to `wss://stt-rt.soniox.com/transcribe-websocket`.
-/// Sends raw binary PCM audio. API key is sent in the initial config JSON (not HTTP header).
+/// Sends raw binary PCM audio. Authenticates the WebSocket upgrade with a Bearer header.
 /// Parses token-based responses with `is_final` flags and `<fin>` markers.
 public final class SonioxStreamingClient: StreamingTranscriptionProvider, @unchecked Sendable {
 
@@ -29,20 +29,23 @@ public final class SonioxStreamingClient: StreamingTranscriptionProvider, @unche
     }
 
     public func connect(apiKey: String, model: String, language: String?, customVocabulary: [String] = []) async throws {
+        try validateAPIKey(apiKey)
         let urlString = "wss://stt-rt.soniox.com/transcribe-websocket"
         guard let url = URL(string: urlString) else {
             throw LLMKitError.invalidURL(urlString)
         }
 
         let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let task = session.webSocketTask(with: request)
 
         self.urlSession = session
         self.webSocketTask = task
         task.resume()
 
-        // Send initial configuration (API key is in the config JSON, not HTTP header)
-        try await sendConfiguration(apiKey: apiKey, model: model, language: language, customVocabulary: customVocabulary)
+        // The connection is authenticated; the start request contains only transcription options.
+        try await sendConfiguration(model: model, language: language, customVocabulary: customVocabulary)
 
         eventsContinuation?.yield(.sessionStarted)
 
@@ -83,13 +86,12 @@ public final class SonioxStreamingClient: StreamingTranscriptionProvider, @unche
 
     // MARK: - Private
 
-    private func sendConfiguration(apiKey: String, model: String, language: String?, customVocabulary: [String]) async throws {
+    private func sendConfiguration(model: String, language: String?, customVocabulary: [String]) async throws {
         guard let task = webSocketTask else {
             throw LLMKitError.networkError("Not connected to Soniox streaming.")
         }
 
         var config: [String: Any] = [
-            "api_key": apiKey,
             "model": model,
             "audio_format": "pcm_s16le",
             "sample_rate": 16000,

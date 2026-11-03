@@ -15,7 +15,7 @@ public struct SonioxClient: Sendable {
     ///   - audioData: Raw audio bytes.
     ///   - fileName: Name of the audio file (e.g. `"recording.wav"`).
     ///   - apiKey: Soniox API key.
-    ///   - model: Model name (e.g. `"stt-async-v4"`).
+    ///   - model: Model name (e.g. `"stt-async-v6"`).
     ///   - language: Optional language hint. Pass `nil` for auto-detect.
     ///   - customVocabulary: Optional list of custom terms to boost recognition.
     ///   - maxWaitSeconds: Maximum seconds to wait for transcription completion (default 300).
@@ -128,7 +128,7 @@ public struct SonioxClient: Sendable {
             payload["context"] = ["terms": customVocabulary]
         }
 
-        if let language, !language.isEmpty {
+        if let language, language != "auto", !language.isEmpty {
             payload["language_hints"] = [language]
             payload["language_hints_strict"] = true
             payload["enable_language_identification"] = true
@@ -168,15 +168,17 @@ public struct SonioxClient: Sendable {
             let (data, response) = try await URLSession.shared.data(for: request)
             try validateHTTPResponse(response, data: data)
 
-            if let status = try? JSONDecoder().decode(TranscriptionStatusResponse.self, from: data) {
-                switch status.status.lowercased() {
-                case "completed":
-                    return
-                case "failed":
-                    throw LLMKitError.httpError(statusCode: 500, message: "Soniox transcription job failed.")
-                default:
-                    break
-                }
+            let status = try decodeJSON(TranscriptionStatusResponse.self, from: data)
+            switch status.status.lowercased() {
+            case "completed":
+                return
+            case "error", "failed":
+                throw LLMKitError.httpError(
+                    statusCode: 500,
+                    message: status.error_message ?? status.error_type ?? "Soniox transcription job failed."
+                )
+            default:
+                break
             }
 
             if Date().timeIntervalSince(start) > maxWaitSeconds {
@@ -212,5 +214,9 @@ public struct SonioxClient: Sendable {
 
 private struct FileUploadResponse: Decodable, Sendable { let id: String }
 private struct CreateTranscriptionResponse: Decodable, Sendable { let id: String }
-private struct TranscriptionStatusResponse: Decodable, Sendable { let status: String }
+private struct TranscriptionStatusResponse: Decodable, Sendable {
+    let status: String
+    let error_type: String?
+    let error_message: String?
+}
 private struct TranscriptResponse: Decodable, Sendable { let text: String }
