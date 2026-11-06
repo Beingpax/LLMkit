@@ -63,6 +63,7 @@ private actor ElevenLabsConnection {
     private let frameBytes = 3_200 // 100 ms of 16-kHz mono PCM16.
     private let bufferLimit = 960_000 // 30 seconds of pending audio.
     private let segmentLimit = 640_000 // Commit at 20 seconds, before server auto-commit.
+    private let minimumCommitBytes = 9_600 // Observed server minimum: 300 ms of uncommitted PCM16.
 
     init(
         endpoint: URL, handshakeTimeout: TimeInterval, sendTimeout: TimeInterval,
@@ -207,7 +208,10 @@ private actor ElevenLabsConnection {
         let (replies, continuation) = AsyncThrowingStream<String, Error>.makeStream()
         pendingCommit = continuation
         defer { pendingCommit = nil; continuation.finish() }
-        try await sendAudio(Data(), commit: true)
+        // A short recording or tail after a periodic commit still needs acknowledgement.
+        // Pad with silence to meet the observed server minimum without dropping audio.
+        let padding = Data(repeating: 0, count: max(0, minimumCommitBytes - segmentBytes))
+        try await sendAudio(padding, commit: true)
         _ = try await withStreamingDeadline(seconds: commitTimeout, timeoutError: ElevenLabsStreamingError.timeout(operation: "commit acknowledgement")) {
             var iterator = replies.makeAsyncIterator()
             guard let text = try await iterator.next() else { throw CancellationError() }
@@ -310,7 +314,7 @@ private actor ElevenLabsConnection {
                "session_time_limit_exceeded", "input_error", "chunk_size_exceeded", "transcriber_error",
                "commit_throttled", "invalid_request", "unaccepted_terms", "queue_overflow",
                "insufficient_audio_activity"].contains(type) else { return nil }
-        return .server(type: type, message: json["message"] as? String ?? type)
+        return .server(type: type, message: json["error"] as? String ?? json["message"] as? String ?? type)
     }
 
     private static func normalizedKeyterms(_ terms: [String]) -> [String] {
