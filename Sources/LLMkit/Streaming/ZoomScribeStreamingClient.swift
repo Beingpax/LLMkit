@@ -1,5 +1,15 @@
 import Foundation
 
+/// The subset of `URLSessionWebSocketTask` the handshake uses. Tests substitute a fake to drive the real flow.
+protocol ZoomScribeSocket: AnyObject, Sendable {
+    var response: URLResponse? { get }
+    func send(_ message: URLSessionWebSocketTask.Message) async throws
+    func receive() async throws -> URLSessionWebSocketTask.Message
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+}
+
+extension URLSessionWebSocketTask: ZoomScribeSocket {}
+
 /// Zoom AI Services Scribe Live streaming client speaking the `live-asr` WebSocket subprotocol.
 ///
 /// Connects to `wss://api.zoom.us/v2/aiservices/scribe/live`. Sends `session.update` first and streams raw
@@ -136,15 +146,34 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
         trackingIdPrefix: String = "zoom_ai_community_llmkit_",
         timeout: TimeInterval = 10
     ) async -> (isValid: Bool, errorMessage: String?) {
+        // The session is created only when the factory runs, so an empty key never opens one.
+        var session: URLSession?
+        let result = await verifyAPIKey(apiKey, trackingIdPrefix: trackingIdPrefix, timeout: timeout) { request in
+            let urlSession = URLSession(configuration: .default)
+            let socket = urlSession.webSocketTask(with: request)
+            socket.resume()
+            session = urlSession
+            return socket
+        }
+        session?.invalidateAndCancel()
+        return result
+    }
+
+    /// The verification flow with the socket supplied by `makeSocket`. The factory must return a socket that is
+    /// already resumed. This function cancels the socket but does not manage the session that owns it.
+    static func verifyAPIKey(
+        _ apiKey: String,
+        trackingIdPrefix: String,
+        timeout: TimeInterval,
+        makeSocket: (URLRequest) -> any ZoomScribeSocket
+    ) async -> (isValid: Bool, errorMessage: String?) {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (false, "API key is missing or empty.")
         }
 
         let trackingId = ZoomScribe.makeTrackingId(prefix: trackingIdPrefix)
         let request = ZoomScribe.makeLiveRequest(apiKey: apiKey, trackingId: trackingId)
-        let session = URLSession(configuration: .default)
-        let socket = session.webSocketTask(with: request)
-        socket.resume()
+        let socket = makeSocket(request)
 
         do {
             _ = try await performHandshake(
@@ -154,20 +183,32 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
                 timeout: timeout)
         } catch {
             socket.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
             return (false, verificationFailureMessage(for: error, trackingId: trackingId))
         }
 
         try? await socket.send(.string(ZoomScribe.sessionCloseMessage))
         socket.cancel(with: .normalClosure, reason: nil)
-        session.invalidateAndCancel()
         return (true, nil)
     }
 
+    private static let invalidKeyMessage = "Invalid Zoom Scribe API key"
+
+    /// Shared by `handshakeError` and `verificationFailureMessage`, so the two cannot drift apart.
+    private static let rejectedConnectionMessage = "Zoom Scribe rejected the connection. Check that the API key is valid"
+
     /// A failed key check is fixed by the user, not by Zoom support, so the message leaves out the tracking id.
+    /// A rejected upgrade reports the invalid-key message whether or not the server sent an HTTP response.
     static func verificationFailureMessage(for error: Error, trackingId: String) -> String {
         if case LLMKitError.httpError(let statusCode, _) = error, statusCode == 401 || statusCode == 403 {
-            return "Invalid Zoom Scribe API key"
+            return invalidKeyMessage
+        }
+        if case LLMKitError.networkError(let message) = error,
+           message == ZoomScribe.withTrackingId(rejectedConnectionMessage, trackingId) {
+            return invalidKeyMessage
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorBadServerResponse {
+            return invalidKeyMessage
         }
         return error.localizedDescription.replacingOccurrences(of: " (tracking_id=\(trackingId))", with: "")
     }
@@ -184,7 +225,7 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
     /// Sends `session.update` and waits for `session.updated`. Skips unrelated frames such as `session.created`.
     /// The timeout cancels the socket so the pending receive unblocks.
     private static func performHandshake(
-        socket: URLSessionWebSocketTask,
+        socket: any ZoomScribeSocket,
         sessionUpdate: String,
         trackingId: String,
         timeout: TimeInterval
@@ -227,7 +268,7 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
     }
 
     private static func receiveFrame(
-        from socket: URLSessionWebSocketTask, trackingId: String
+        from socket: any ZoomScribeSocket, trackingId: String
     ) async throws -> URLSessionWebSocketTask.Message {
         do {
             return try await socket.receive()
@@ -238,7 +279,7 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
 
     /// Maps a send or receive failure during the handshake. Either can be the first to observe a refused upgrade.
     private static func handshakeError(
-        _ error: Error, socket: URLSessionWebSocketTask, trackingId: String
+        _ error: Error, socket: any ZoomScribeSocket, trackingId: String
     ) -> Error {
         if let http = socket.response as? HTTPURLResponse, http.statusCode != 101 {
             return LLMKitError.httpError(
@@ -249,8 +290,7 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
         // with no HTTP response attached.
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorBadServerResponse {
-            return LLMKitError.networkError(ZoomScribe.withTrackingId(
-                "Zoom Scribe rejected the connection. Check that the API key is valid", trackingId))
+            return LLMKitError.networkError(ZoomScribe.withTrackingId(rejectedConnectionMessage, trackingId))
         }
         return LLMKitError.networkError(ZoomScribe.withTrackingId(error.localizedDescription, trackingId))
     }

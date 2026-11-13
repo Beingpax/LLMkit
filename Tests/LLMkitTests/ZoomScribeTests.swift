@@ -523,4 +523,92 @@ struct ZoomScribeTests {
         }
         #expect(ZoomScribe.cleanedTranscript(text, model: "zoom-scribe-zh") == "合国推动")
     }
+
+    @Test func rejectedUpgradeWith401ReportsInvalidKey() async {
+        let socket = FakeScribeSocket(
+            response: httpResponse(401), receives: [.failure(URLError(.badServerResponse))])
+        let result = await verifyWithFake("key", socket: socket)
+        #expect(result.isValid == false)
+        #expect(result.errorMessage == "Invalid Zoom Scribe API key")
+    }
+
+    @Test func rejectedUpgradeWith403ReportsInvalidKey() async {
+        let socket = FakeScribeSocket(
+            response: httpResponse(403), receives: [.failure(URLError(.badServerResponse))])
+        let result = await verifyWithFake("key", socket: socket)
+        #expect(result.isValid == false)
+        #expect(result.errorMessage == "Invalid Zoom Scribe API key")
+    }
+
+    @Test func noResponseBadServerResponseReportsInvalidKey() async {
+        let socket = FakeScribeSocket(
+            response: nil,
+            receives: [.failure(NSError(domain: NSURLErrorDomain, code: NSURLErrorBadServerResponse))])
+        let result = await verifyWithFake("key", socket: socket)
+        #expect(result.isValid == false)
+        #expect(result.errorMessage == "Invalid Zoom Scribe API key")
+    }
+
+    @Test func successfulHandshakeReportsValid() async {
+        let socket = FakeScribeSocket(
+            response: httpResponse(101),
+            receives: [.success(.string(#"{"type":"session.updated","model":"zoom-scribe-en"}"#))])
+        let result = await verifyWithFake("key", socket: socket)
+        #expect(result.isValid)
+        #expect(result.errorMessage == nil)
+    }
+
+    @Test func otherNetworkErrorKeepsDescriptiveMessage() async {
+        let socket = FakeScribeSocket(response: nil, receives: [.failure(URLError(.timedOut))])
+        let result = await verifyWithFake("key", socket: socket)
+        #expect(result.isValid == false)
+        #expect(result.errorMessage != nil)
+        #expect(result.errorMessage != "Invalid Zoom Scribe API key")
+    }
+
+    @Test func emptyKeyIsRejectedBeforeConnecting() async {
+        var socketCreated = false
+        let result = await ZoomScribeStreamingClient.verifyAPIKey(
+            "   ", trackingIdPrefix: "trk_", timeout: 1
+        ) { _ in
+            socketCreated = true
+            return FakeScribeSocket(response: nil, receives: [])
+        }
+        #expect(result.isValid == false)
+        #expect(result.errorMessage == "API key is missing or empty.")
+        #expect(socketCreated == false)
+    }
+
+    private func verifyWithFake(_ apiKey: String, socket: FakeScribeSocket) async -> (isValid: Bool, errorMessage: String?) {
+        await ZoomScribeStreamingClient.verifyAPIKey(apiKey, trackingIdPrefix: "trk_", timeout: 1) { _ in socket }
+    }
+
+    private func httpResponse(_ statusCode: Int) -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: ZoomScribe.liveURL, statusCode: statusCode, httpVersion: "HTTP/1.1", headerFields: nil)!
+    }
+}
+
+/// Scripted socket for driving `verifyAPIKey` without a network. Receives are served from a queue in order.
+final class FakeScribeSocket: ZoomScribeSocket, @unchecked Sendable {
+    let response: URLResponse?
+    private let lock = NSLock()
+    private var receives: [Result<URLSessionWebSocketTask.Message, Error>]
+
+    init(response: URLResponse?, receives: [Result<URLSessionWebSocketTask.Message, Error>]) {
+        self.response = response
+        self.receives = receives
+    }
+
+    func send(_ message: URLSessionWebSocketTask.Message) async throws {}
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        let next = lock.withLock { () -> Result<URLSessionWebSocketTask.Message, Error>? in
+            receives.isEmpty ? nil : receives.removeFirst()
+        }
+        guard let next else { throw URLError(.networkConnectionLost) }
+        return try next.get()
+    }
+
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {}
 }
