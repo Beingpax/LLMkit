@@ -9,13 +9,13 @@ LLMkit is a pure networking layer — no UI, no persistence, no app state. It ha
 ## Clients
 
 **Transcription** (audio file → text):
-- `DeepgramClient`, `ElevenLabsClient`, `SonioxClient`, `MistralTranscriptionClient`, `GeminiTranscriptionClient`, `OpenAITranscriptionClient`
+- `DeepgramClient`, `ElevenLabsClient`, `SonioxClient`, `MistralTranscriptionClient`, `GeminiTranscriptionClient`, `OpenAITranscriptionClient`, `ZoomScribeClient`
 
 **LLM Chat Completion** (messages → response):
 - `AnthropicLLMClient`, `GeminiLLMClient`, `OpenAILLMClient`, `OllamaClient`, `OpenRouterClient`
 
 **Streaming Transcription** (live audio → real-time text via WebSocket):
-- `ElevenLabsStreamingClient`, `DeepgramStreamingClient`, `GeminiStreamingClient`, `MistralStreamingClient`, `SonioxStreamingClient`
+- `ElevenLabsStreamingClient`, `DeepgramStreamingClient`, `GeminiStreamingClient`, `MistralStreamingClient`, `SonioxStreamingClient`, `ZoomScribeStreamingClient`
 
 ## Usage
 
@@ -67,6 +67,11 @@ non-stored Interactions request, and deletes the uploaded file after the request
 For Nova-3 multilingual and code-switching transcription, pass `language: "multi"`. Deepgram defaults an
 omitted language to English. Both the batch and streaming clients send custom vocabulary as Nova-3 `keyterm`
 parameters; up to 100 terms are accepted by the client, subject to Deepgram's 500-token total limit.
+
+`ZoomScribeClient` (Fast) accepts WAV, MP3, M4A, MP4 or WebM files. Requests the service rejects as too large
+fail with HTTP 413, so callers can re-encode to a compressed format such as AAC and retry.
+`ZoomScribeStreamingClient` (Live) expects 16 kHz mono PCM16 and delivers the full transcript on `finalizationEvents`
+after `commit()`. A nil or `"auto"` language on `zoom-scribe-multilingual` enables continuous language detection.
 
 ## Requirements
 
