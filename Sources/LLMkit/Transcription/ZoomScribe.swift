@@ -13,7 +13,7 @@ enum ZoomScribe {
     static let englishProModel = "zoom-scribe-en-pro"
     static let models: [String] = [multilingualModel, englishModel, englishProModel]
 
-    /// Scribe expects a regional locale. Base codes outside this table fall back to en-US.
+    /// Scribe expects a regional locale. Base codes outside this table are passed through unchanged.
     static let localeByLanguage: [String: String] = [
         "en": "en-US", "ar": "ar-SA", "zh": "zh-CN", "fr": "fr-FR", "de": "de-DE",
         "it": "it-IT", "ja": "ja-JP", "ko": "ko-KR", "pt": "pt-BR", "es": "es-ES",
@@ -48,7 +48,7 @@ enum ZoomScribe {
     static func polishingEnabled(requested: Bool, model: String?, language: String?) -> Bool {
         requested
             && !usesLanguageDetection(language: language, model: model)
-            && locale(for: language) == "en-US"
+            && locale(for: language).lowercased() == "en-us"
     }
 
     /// The top-level `outputs` object that enables text polishing. It must sit next to `config`, not inside it.
@@ -61,10 +61,11 @@ enum ZoomScribe {
     /// Tags are stripped because this output is used as dictation text, where `[Speaker 1]` would be pasted in.
     static func polishedOutput(from text: String) -> String? {
         guard !text.contains("[polishing_failed:") else { return nil }
-        return text
+        let cleaned = text
             .replacingOccurrences(of: #"\[(?:Speaker \d+|channel\d+)\]\s*"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     /// Removes the spaces that `zoom-scribe-zh` puts between Chinese characters and around Chinese punctuation.
@@ -97,12 +98,16 @@ enum ZoomScribe {
     }
 
     /// Maps a base language code to a Scribe locale. Codes that already contain a region pass through unchanged.
+    /// Missing or `auto` input maps to en-US. Unknown base codes pass through so Zoom can reject them.
     static func locale(for language: String?) -> String {
         let trimmed = language?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.contains("-") {
             return trimmed
         }
-        return localeByLanguage[trimmed.lowercased()] ?? "en-US"
+        if isAutoLanguage(language) {
+            return "en-US"
+        }
+        return localeByLanguage[trimmed.lowercased()] ?? trimmed
     }
 
     /// Returns the Fast `audio/*` or `video/*` MIME type for a documented container, or nil if undocumented.

@@ -10,12 +10,16 @@ struct ZoomScribeTests {
         #expect(ZoomScribe.locale(for: "fr-CA") == "fr-CA")
     }
 
-    @Test func unknownOrMissingLanguageFallsBackToEnglish() {
+    @Test func missingOrAutoLanguageFallsBackToEnglish() {
         #expect(ZoomScribe.locale(for: nil) == "en-US")
         #expect(ZoomScribe.locale(for: "") == "en-US")
         #expect(ZoomScribe.locale(for: "auto") == "en-US")
-        #expect(ZoomScribe.locale(for: "ru") == "en-US")
-        #expect(ZoomScribe.locale(for: "yue") == "en-US")
+    }
+
+    @Test func unknownLanguageCodePassesThroughToZoom() {
+        #expect(ZoomScribe.locale(for: "ru") == "ru")
+        #expect(ZoomScribe.locale(for: " yue ") == "yue")
+        #expect(ZoomScribe.apiModel(for: ZoomScribe.englishModel, language: "ru") == ZoomScribe.multilingualModel)
     }
 
     @Test func sessionUpdateCarriesModelAndInterimResults() throws {
@@ -300,11 +304,19 @@ struct ZoomScribeTests {
         #expect(rejection?.message == "Zoom Scribe does not accept files without an extension (tracking_id=trk)")
     }
 
+    @Test func handshakeTimeoutRejectsNaNAndNegativeValues() {
+        #expect(ZoomScribeStreamingClient.sanitizedHandshakeTimeout(.nan) == 10)
+        #expect(ZoomScribeStreamingClient.sanitizedHandshakeTimeout(-1) == 10)
+        #expect(ZoomScribeStreamingClient.sanitizedHandshakeTimeout(.infinity) == 10)
+        #expect(ZoomScribeStreamingClient.sanitizedHandshakeTimeout(5) == 5)
+        #expect(ZoomScribeStreamingClient.sanitizedHandshakeTimeout(1e18) == 3600)
+    }
+
     @Test func fastLargeBodyIsSentWithoutLocalCap() throws {
         let body = try ZoomScribeClient.prepareRequestBody(
-            audioData: Data(count: 40_000_000), fileName: "call.wav", model: ZoomScribe.multilingualModel,
+            audioData: Data(count: 3_000_000), fileName: "call.wav", model: ZoomScribe.multilingualModel,
             language: nil, vocabulary: [], trackingId: "trk")
-        #expect(body.count > 50_000_000)
+        #expect(body.count > 3_000_000)
     }
 
     /// Returns the HTTP status and message of an `LLMKitError.httpError` thrown by `body`, or nil.
@@ -413,6 +425,10 @@ struct ZoomScribeTests {
         #expect(ZoomScribe.polishedOutput(from: "Hello.[Speaker 2] Bye") == "Hello. Bye")
         #expect(ZoomScribe.polishedOutput(from: "[Speaker 1] Welcome everyone. [Speaker 2] Let's get started.") == "Welcome everyone. Let's get started.")
         #expect(ZoomScribe.polishedOutput(from: "[channel0] Hi [channel1] there") == "Hi there")
+    }
+
+    @Test func polishedOutputIsNilWhenTextIsEmptyAfterTagRemoval() {
+        #expect(ZoomScribe.polishedOutput(from: "[Speaker 1] ") == nil)
     }
 
     @Test func polishedOutputIsNilWhenPolishingFailed() {

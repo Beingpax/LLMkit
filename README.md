@@ -69,7 +69,7 @@ omitted language to English. Both the batch and streaming clients send custom vo
 parameters; up to 100 terms are accepted by the client, subject to Deepgram's 500-token total limit.
 
 `ZoomScribeClient` (Fast) accepts WAV, MP3, M4A, MP4 or WebM files. Requests the service rejects as too large
-fail with HTTP 413, so callers can re-encode to a compressed format such as AAC and retry.
+fail with HTTP 413, so callers can re-encode to AAC audio in an M4A container and retry.
 `ZoomScribeStreamingClient` (Live) expects 16 kHz mono PCM16 and delivers the full transcript on `finalizationEvents`
 after `commit()`. A nil or `"auto"` language on `zoom-scribe-multilingual` enables continuous language detection.
 

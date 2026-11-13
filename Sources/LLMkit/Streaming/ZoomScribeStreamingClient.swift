@@ -74,6 +74,11 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
         let sessionUpdate = ZoomScribe.sessionUpdateMessage(
             language: language, model: model, vocabulary: customVocabulary, textPolishing: textPolishing)
 
+        // Tear down any previous connection so its socket and receive loop cannot outlive the new one.
+        let previous = releaseConnection()
+        previous.receiveTask?.cancel()
+        Self.close(previous.socket, session: previous.session)
+
         lock.withLock {
             connectionTrackingId = trackingId
             connectionApiModel = ZoomScribe.apiModel(for: model, language: language)
@@ -169,6 +174,13 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
 
     // MARK: - Handshake
 
+    /// Keeps a caller-supplied timeout safe to convert to nanoseconds. NaN, infinite, and negative values use the
+    /// default, and larger values are capped at one hour.
+    static func sanitizedHandshakeTimeout(_ timeout: TimeInterval) -> TimeInterval {
+        guard timeout.isFinite, timeout >= 0 else { return handshakeTimeout }
+        return min(timeout, 3600)
+    }
+
     /// Sends `session.update` and waits for `session.updated`. Skips unrelated frames such as `session.created`.
     /// The timeout cancels the socket so the pending receive unblocks.
     private static func performHandshake(
@@ -202,7 +214,7 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
                 }
             }
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(Self.sanitizedHandshakeTimeout(timeout) * 1_000_000_000))
                 socket.cancel(with: .normalClosure, reason: nil)
                 throw LLMKitError.timeout
             }
@@ -261,7 +273,8 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
             while !Task.isCancelled {
                 do {
                     let frame = try await socket.receive()
-                    if let text = Self.text(from: frame) {
+                    // Frames from a socket that was replaced by connect() or disconnect() are dropped.
+                    if let text = Self.text(from: frame), self?.currentSocket === socket {
                         self?.handle(text)
                     }
                 } catch {
@@ -308,9 +321,12 @@ public final class ZoomScribeStreamingClient: StreamingTranscriptionProvider, @u
                 sessionEnded = true
                 return commitRequested ? finalTurns.joined(separator: " ") : nil
             }
-            if let transcript {
-                completeFinalization(with: transcript)
-            }
+            completeFinalization(with: transcript)
+            // The session is over, so release the socket and session. This task is the receive loop, so it is
+            // cancelled but never awaited.
+            let released = releaseConnection()
+            released.receiveTask?.cancel()
+            Self.close(released.socket, session: released.session)
 
         case .sessionUpdated, .speechStarted, .other:
             break
