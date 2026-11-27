@@ -103,23 +103,26 @@ public struct AssemblyAIClient: Sendable {
             throw LLMKitError.invalidURL("\(apiBase)/v2/transcript")
         }
 
-        let speechModels = speechModels(for: model)
-        let primarySpeechModel = speechModels.first ?? model
+        let detectsLanguage = (language?.isEmpty ?? true) || language == "auto"
+        let speechModels = speechModels(for: model, detectsLanguage: detectsLanguage)
 
+        // AssemblyAI-STT-3.7 keeps filler words unless disfluencies is false.
+        // Other models already default to false.
         var payload: [String: Any] = [
             "audio_url": audioURL,
             "speech_models": speechModels,
             "punctuate": true,
-            "format_text": true
+            "format_text": true,
+            "disfluencies": false
         ]
 
-        if let language, !language.isEmpty, language != "auto" {
+        if let language, !detectsLanguage {
             payload["language_code"] = language
         } else {
             payload["language_detection"] = true
         }
 
-        let keyterms = normalizedKeyterms(customVocabulary, model: primarySpeechModel)
+        let keyterms = normalizedKeyterms(customVocabulary, speechModels: speechModels)
         if !keyterms.isEmpty {
             payload["keyterms_prompt"] = keyterms
         }
@@ -178,8 +181,13 @@ public struct AssemblyAIClient: Sendable {
         }
     }
 
-    private static func speechModels(for model: String) -> [String] {
+    private static func speechModels(for model: String, detectsLanguage: Bool) -> [String] {
         switch model {
+        case "assemblyai-stt-3-7":
+            // With language detection, STT-3.7 falls back to Universal-2 for
+            // unsupported languages only when Universal-2 is listed. An explicit
+            // unsupported language_code falls back automatically.
+            return detectsLanguage ? ["assemblyai-stt-3-7", "universal-2"] : ["assemblyai-stt-3-7"]
         case "universal-3-5-pro":
             return ["universal-3-5-pro"]
         case "universal-2":
@@ -189,10 +197,12 @@ public struct AssemblyAIClient: Sendable {
         }
     }
 
-    private static func normalizedKeyterms(_ terms: [String], model: String) -> [String] {
+    private static func normalizedKeyterms(_ terms: [String], speechModels: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
-        let limit = model == "universal-2" ? 200 : 1_000
+        // Universal-2 accepts 200 keyterms; keep within its limit whenever it may
+        // transcribe the request, including as a fallback.
+        let limit = speechModels.contains("universal-2") ? 200 : 1_000
         for term in terms {
             let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
             let wordCount = trimmed.split(separator: " ").count
